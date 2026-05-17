@@ -48,8 +48,8 @@ const state = {
             status: "",
             q: ""
         },
-        layout: "lanes",
         groupMode: "priority",
+        nonePriorityFirst: false,
         editorTask: null,
         linkedTicket: null
     },
@@ -148,8 +148,6 @@ const els = {
     plannerSearch: document.getElementById("plannerSearch"),
     plannerGroupPriority: document.getElementById("plannerGroupPriority"),
     plannerGroupCategory: document.getElementById("plannerGroupCategory"),
-    plannerLayoutLanes: document.getElementById("plannerLayoutLanes"),
-    plannerLayoutList: document.getElementById("plannerLayoutList"),
     settingsPanel: document.getElementById("settingsPanel"),
     closeSettingsButton: document.getElementById("closeSettingsButton"),
     saveTeamsButton: document.getElementById("saveTeamsButton"),
@@ -169,6 +167,8 @@ const els = {
     plannerOpenCount: document.getElementById("plannerOpenCount"),
     plannerCriticalCount: document.getElementById("plannerCriticalCount"),
     plannerOverdueCount: document.getElementById("plannerOverdueCount"),
+    plannerNoneCount: document.getElementById("plannerNoneCount"),
+    plannerNonePriorityTile: document.getElementById("plannerNonePriorityTile"),
     detailPanel: document.getElementById("detailPanel"),
     detailTitle: document.getElementById("detailTitle"),
     detailPeriod: document.getElementById("detailPeriod"),
@@ -467,8 +467,7 @@ function bindEvents() {
     els.plannerSearch.addEventListener("input", () => updatePlannerFilter("q", els.plannerSearch.value));
     els.plannerGroupPriority.addEventListener("click", () => setPlannerGroup("priority"));
     els.plannerGroupCategory.addEventListener("click", () => setPlannerGroup("category"));
-    els.plannerLayoutLanes.addEventListener("click", () => setPlannerLayout("lanes"));
-    els.plannerLayoutList.addEventListener("click", () => setPlannerLayout("list"));
+    els.plannerNonePriorityTile.addEventListener("click", toggleNonePriorityTasksFirst);
     els.closePlannerTaskButton.addEventListener("click", closePlannerEditor);
     els.cancelPlannerTaskButton.addEventListener("click", closePlannerEditor);
     els.deletePlannerTaskButton.addEventListener("click", deletePlannerTask);
@@ -613,8 +612,6 @@ function syncPlannerControls() {
     els.plannerSearch.value = state.planner.filters.q;
     els.plannerGroupPriority.classList.toggle("is-selected", state.planner.groupMode === "priority");
     els.plannerGroupCategory.classList.toggle("is-selected", state.planner.groupMode === "category");
-    els.plannerLayoutLanes.classList.toggle("is-selected", state.planner.layout === "lanes");
-    els.plannerLayoutList.classList.toggle("is-selected", state.planner.layout === "list");
 }
 
 function filteredPlannerUsersForTeam(teamId) {
@@ -639,8 +636,19 @@ function setPlannerGroup(groupMode) {
     renderPlanner();
 }
 
-function setPlannerLayout(layout) {
-    state.planner.layout = layout;
+function toggleNonePriorityTasksFirst() {
+    if (state.planner.nonePriorityFirst) {
+        closeNonePriorityTasksFirst();
+        return;
+    }
+    state.planner.nonePriorityFirst = true;
+    syncPlannerControls();
+    renderPlanner();
+    els.plannerBoard.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function closeNonePriorityTasksFirst() {
+    state.planner.nonePriorityFirst = false;
     syncPlannerControls();
     renderPlanner();
 }
@@ -1918,6 +1926,10 @@ function renderPlanner() {
     els.plannerOpenCount.textContent = openTasks.length;
     els.plannerCriticalCount.textContent = openTasks.filter((task) => task.priorityId === "critical").length;
     els.plannerOverdueCount.textContent = openTasks.filter((task) => isOverdue(task.dueDate)).length;
+    const nonePriorityCount = openTasks.filter((task) => task.priorityId === "none").length;
+    els.plannerNoneCount.textContent = nonePriorityCount;
+    els.plannerNonePriorityTile.classList.toggle("has-warning", nonePriorityCount > 0);
+    els.plannerNonePriorityTile.classList.toggle("is-selected", state.planner.nonePriorityFirst);
     els.plannerBoard.innerHTML = "";
 
     if (tasks.length === 0) {
@@ -1925,10 +1937,20 @@ function renderPlanner() {
         return;
     }
 
-    if (state.planner.layout === "list") {
+    if (state.planner.nonePriorityFirst) {
         els.plannerBoard.classList.add("is-list");
         els.plannerBoard.classList.remove("is-lanes");
-        els.plannerBoard.innerHTML = tasks.map(renderPlannerTaskCard).join("");
+        const listTasks = nonePrioritySortedTasks(tasks);
+        els.plannerBoard.innerHTML = `
+            <div class="planner-none-list-banner">
+                <div>
+                    <strong>None priority tasks</strong>
+                    <span>Shown first so they can be triaged into a real priority.</span>
+                </div>
+                <button class="secondary-button" id="closeNonePriorityListButton" type="button">Close</button>
+            </div>
+            ${listTasks.map(renderPlannerTaskCard).join("")}
+        `;
     } else {
         els.plannerBoard.classList.add("is-lanes");
         els.plannerBoard.classList.remove("is-list");
@@ -1948,11 +1970,23 @@ function renderPlanner() {
         }).join("");
     }
 
+    els.plannerBoard.querySelector("#closeNonePriorityListButton")?.addEventListener("click", closeNonePriorityTasksFirst);
     els.plannerBoard.querySelectorAll("[data-planner-edit]").forEach((button) => {
         button.addEventListener("click", () => {
             const task = state.planner.tasks.find((item) => String(item.id) === button.dataset.plannerEdit);
             openPlannerEditor(task);
         });
+    });
+}
+
+function nonePrioritySortedTasks(tasks) {
+    return [...tasks].sort((a, b) => {
+        const aNone = a.priorityId === "none" ? 0 : 1;
+        const bNone = b.priorityId === "none" ? 0 : 1;
+        if (aNone !== bNone) {
+            return aNone - bNone;
+        }
+        return String(a.dueDate || "9999-99-99").localeCompare(String(b.dueDate || "9999-99-99"));
     });
 }
 

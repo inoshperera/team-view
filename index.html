@@ -132,8 +132,6 @@
             <div class="planner-toggle-row">
                 <button class="secondary-button is-selected" id="plannerGroupPriority" type="button">By priority</button>
                 <button class="secondary-button" id="plannerGroupCategory" type="button">By category</button>
-                <button class="secondary-button is-selected" id="plannerLayoutLanes" type="button">Lanes</button>
-                <button class="secondary-button" id="plannerLayoutList" type="button">List</button>
             </div>
         </section>
 
@@ -225,6 +223,10 @@
                 <span class="summary-value" id="plannerOverdueCount">0</span>
                 <span class="summary-label">Overdue</span>
             </div>
+            <button class="summary-tile planner-none-tile" id="plannerNonePriorityTile" type="button">
+                <span class="summary-value" id="plannerNoneCount">0</span>
+                <span class="summary-label">None priority</span>
+            </button>
         </section>
 
         <section class="board" id="teamBoard" aria-label="Team activity board"></section>
@@ -286,6 +288,18 @@
                         <input id="plannerTaskPriority" type="hidden">
                         <div class="planner-choice-row priority-choice-row" id="plannerTaskPriorityChoices" role="radiogroup" aria-label="Priority"></div>
                     </label>
+                    <label class="field progress-date-row-progress">
+                        <span>Progress (%)</span>
+                        <input id="plannerTaskProgress" type="number" min="0" max="100" step="1" inputmode="numeric" value="0">
+                    </label>
+                    <label class="field priority-date-row-date">
+                        <span>Start date</span>
+                        <input id="plannerTaskStart" type="date">
+                    </label>
+                    <label class="field priority-date-row-date">
+                        <span>End date *</span>
+                        <input id="plannerTaskDue" type="date" required>
+                    </label>
                     <label class="field">
                         <span>Redmine ticket</span>
                         <input id="plannerTaskRedmineSearch" list="plannerTicketOptions" placeholder="Recent tickets, issue ID, or Redmine link">
@@ -294,18 +308,6 @@
                     <label class="field">
                         <span>Status</span>
                         <select id="plannerTaskStatus"></select>
-                    </label>
-                    <label class="field">
-                        <span>Progress (%)</span>
-                        <input id="plannerTaskProgress" type="number" min="0" max="100" step="1" inputmode="numeric" value="0">
-                    </label>
-                    <label class="field">
-                        <span>Start date</span>
-                        <input id="plannerTaskStart" type="date">
-                    </label>
-                    <label class="field">
-                        <span>Due date *</span>
-                        <input id="plannerTaskDue" type="date" required>
                     </label>
                     <div class="planner-synced-panel is-hidden full" id="plannerSyncedPanel"></div>
                     <div class="field full">
