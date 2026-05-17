@@ -322,6 +322,32 @@ def list_projects(db):
     )
 
 
+def list_redmine_projects(db, redmine, api_key, query=""):
+    projects = []
+    offset = 0
+    limit = 100
+    while True:
+        payload = redmine.get("/projects.json", api_key, {"limit": limit, "offset": offset})
+        batch = payload.get("projects", [])
+        for raw in batch:
+            ensure_project(db, raw)
+        projects.extend(batch)
+        total = int(payload.get("total_count") or len(projects))
+        offset += limit
+        if offset >= total or not batch or offset >= 500:
+            break
+
+    rows = [row for row in list_projects(db) if row.get("source") == "redmine"]
+    needle = str(query or "").strip().lower()
+    if needle:
+        rows = [
+            row for row in rows
+            if needle in str(row.get("name") or "").lower()
+            or needle in str(row.get("redmineIdentifier") or "").lower()
+        ]
+    return rows
+
+
 def parse_issue_id(value):
     text = str(value or "").strip()
     match = re.search(r"(?:issues/|#)?(\d+)", text)
@@ -378,7 +404,10 @@ def normalize_redmine_issue(db, issue):
 
 def ensure_project(db, project):
     redmine_id = project.get("id")
-    identifier = project.get("identifier") or (str(project.get("name") or "").lower().replace(" ", "-") or None)
+    raw_identifier = project.get("identifier") or project.get("name") or f"redmine-{redmine_id or uuid.uuid4()}"
+    identifier = re.sub(r"[^a-z0-9]+", "-", str(raw_identifier).strip().lower()).strip("-")
+    if not identifier:
+        identifier = f"redmine-{redmine_id or uuid.uuid4()}"
     name = project.get("name") or identifier or "Redmine project"
     if redmine_id:
         db.execute(
@@ -389,7 +418,12 @@ def ensure_project(db, project):
             """,
             (name, redmine_id, identifier),
         )
-        return db.one("SELECT id FROM projects WHERE redmine_project_id=%s", (redmine_id,))["id"]
+        row = db.one("SELECT id FROM projects WHERE redmine_project_id=%s", (redmine_id,))
+        if row:
+            return row["id"]
+        row = db.one("SELECT id FROM projects WHERE redmine_identifier=%s", (identifier,))
+        if row:
+            return row["id"]
     db.execute(
         """
         INSERT INTO projects (name,source,redmine_identifier)
@@ -398,7 +432,10 @@ def ensure_project(db, project):
         """,
         (name, identifier),
     )
-    return db.one("SELECT id FROM projects WHERE redmine_identifier=%s", (identifier,))["id"]
+    row = db.one("SELECT id FROM projects WHERE redmine_identifier=%s", (identifier,))
+    if not row:
+        raise ValueError(f"Unable to cache Redmine project {name}.")
+    return row["id"]
 
 
 def replace_ticket_assignees(db, ticket_id, issue):
@@ -436,7 +473,7 @@ def map_priority(name):
 
 
 def list_redmine_recent_tickets(db, redmine, api_key, project_id=None, query=""):
-    params = {"status_id": "*", "sort": "created_on:desc", "limit": 25}
+    params = {"status_id": "*", "sort": "created_on:desc", "limit": 10}
     if project_id:
         project = db.one("SELECT * FROM projects WHERE id=%s", (project_id,))
         if project and project.get("redmine_identifier"):

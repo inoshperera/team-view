@@ -128,6 +128,9 @@ class TeamViewHandler(BaseHTTPRequestHandler):
             self.json(200, {"team": team})
         elif path == "/api/projects" and method == "GET":
             self.json(200, {"projects": services.list_projects(DB)})
+        elif path == "/api/redmine/projects" and method == "GET":
+            projects = services.list_redmine_projects(DB, REDMINE, user.get("redmine_api_key"), query.get("q", ""))
+            self.json(200, {"projects": projects})
         elif path == "/api/users" and method == "GET":
             self.json(200, {"users": services.list_users(DB)})
         elif path == "/api/tasks" and method == "GET":

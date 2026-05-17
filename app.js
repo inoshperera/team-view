@@ -36,6 +36,7 @@ const state = {
         teams: [],
         users: [],
         projects: [],
+        projectsLoadedFromRedmine: false,
         categories: [],
         priorities: [],
         statuses: [],
@@ -190,7 +191,9 @@ const els = {
     plannerTaskTitleInput: document.getElementById("plannerTaskTitleInput"),
     plannerTaskDescription: document.getElementById("plannerTaskDescription"),
     plannerTaskTeam: document.getElementById("plannerTaskTeam"),
+    plannerTaskProjectSearch: document.getElementById("plannerTaskProjectSearch"),
     plannerTaskProject: document.getElementById("plannerTaskProject"),
+    plannerProjectOptions: document.getElementById("plannerProjectOptions"),
     plannerTaskCategory: document.getElementById("plannerTaskCategory"),
     plannerTaskPriority: document.getElementById("plannerTaskPriority"),
     plannerTaskRedmineSearch: document.getElementById("plannerTaskRedmineSearch"),
@@ -230,6 +233,7 @@ async function init() {
 
 async function bootstrapAuthenticatedApp() {
     await loadPlannerBootstrap();
+    await loadPlannerProjects();
     await loadWorkPhraseConfig();
     await loadTeamConfigFromFile();
     syncPlannerControls();
@@ -468,8 +472,10 @@ function bindEvents() {
     els.deletePlannerTaskButton.addEventListener("click", deletePlannerTask);
     els.plannerTaskModal.addEventListener("submit", savePlannerTask);
     els.plannerTaskTeam.addEventListener("change", () => renderPlannerMemberPicker());
-    els.plannerTaskProject.addEventListener("change", handlePlannerProjectChange);
+    els.plannerTaskProjectSearch.addEventListener("input", handlePlannerProjectSearch);
+    els.plannerTaskProjectSearch.addEventListener("change", handlePlannerProjectSearch);
     els.plannerTaskRedmineSearch.addEventListener("input", debounce(loadPlannerTicketOptions, 250));
+    els.plannerTaskProgress.addEventListener("input", clampPlannerProgressInput);
     document.querySelectorAll("[data-status-filter]").forEach((button) => {
         button.addEventListener("click", () => {
             state.statusFilter = button.dataset.statusFilter;
@@ -554,6 +560,18 @@ async function loadPlannerBootstrap() {
             : "";
     }
     state.work.teamId = state.planner.filters.teamId || state.teams[0]?.id || "";
+}
+
+async function loadPlannerProjects() {
+    try {
+        const payload = await apiJson("/api/redmine/projects");
+        if (payload.projects?.length) {
+            state.planner.projects = payload.projects;
+            state.planner.projectsLoadedFromRedmine = true;
+        }
+    } catch {
+        state.planner.projectsLoadedFromRedmine = false;
+    }
 }
 
 async function refreshPlanner() {
@@ -2345,7 +2363,10 @@ function renderDetailRow(row) {
     `;
 }
 
-function openPlannerEditor(task) {
+async function openPlannerEditor(task) {
+    if (!state.planner.projectsLoadedFromRedmine) {
+        await loadPlannerProjects();
+    }
     state.planner.editorTask = task ? { ...task } : null;
     state.planner.linkedTicket = task?.redmineLinked ? task : null;
     els.plannerTaskEyebrow.textContent = task ? `Edit task · ${task.teamId}` : "New task";
@@ -2356,7 +2377,7 @@ function openPlannerEditor(task) {
     els.plannerTaskTitleInput.value = task?.title || "";
     els.plannerTaskDescription.value = task?.description || "";
     els.plannerTaskTeam.value = task?.teamId || state.planner.filters.teamId || state.auth.user?.teamId || state.planner.teams[0]?.id || "";
-    els.plannerTaskProject.value = task?.projectId || state.planner.projects[0]?.id || "";
+    setPlannerProjectValue(task?.projectId || state.planner.projects[0]?.id || "");
     els.plannerTaskCategory.value = task?.categoryId || "dev";
     els.plannerTaskPriority.value = task?.priorityId || "medium";
     els.plannerTaskStatus.value = task?.statusId || "working";
@@ -2368,6 +2389,7 @@ function openPlannerEditor(task) {
     renderPlannerMemberPicker(task?.memberIds || []);
     els.plannerTaskError.classList.add("is-hidden");
     els.plannerTaskModal.classList.remove("is-hidden");
+    await loadPlannerTicketOptions();
 }
 
 function closePlannerEditor() {
@@ -2380,10 +2402,27 @@ function fillPlannerEditorOptions(task) {
     const canPickTeam = ["manager", "admin"].includes(state.auth.user?.role);
     els.plannerTaskTeam.disabled = !canPickTeam;
     els.plannerTaskTeam.innerHTML = state.planner.teams.map((team) => `<option value="${escapeHtml(team.id)}">${escapeHtml(team.name)}</option>`).join("");
-    els.plannerTaskProject.innerHTML = state.planner.projects.map((project) => `<option value="${project.id}">${escapeHtml(project.name)}</option>`).join("");
+    els.plannerProjectOptions.innerHTML = state.planner.projects.map((project) => `<option value="${escapeHtml(project.name)}">${escapeHtml(project.redmineIdentifier || project.source || "")}</option>`).join("");
     els.plannerTaskCategory.innerHTML = state.planner.categories.map((item) => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("");
     els.plannerTaskPriority.innerHTML = state.planner.priorities.map((item) => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("");
     els.plannerTaskStatus.innerHTML = state.planner.statuses.map((item) => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("");
+}
+
+function setPlannerProjectValue(projectId) {
+    const project = state.planner.projects.find((item) => Number(item.id) === Number(projectId)) || state.planner.projects[0];
+    els.plannerTaskProject.value = project?.id || "";
+    els.plannerTaskProjectSearch.value = project?.name || "";
+}
+
+function findPlannerProject(value) {
+    const text = String(value || "").trim().toLowerCase();
+    if (!text) {
+        return null;
+    }
+    return state.planner.projects.find((project) => String(project.name || "").trim().toLowerCase() === text)
+        || state.planner.projects.find((project) => String(project.redmineIdentifier || "").trim().toLowerCase() === text)
+        || state.planner.projects.find((project) => String(project.id) === text)
+        || null;
 }
 
 function renderPlannerMemberPicker(selectedIds = []) {
@@ -2407,7 +2446,8 @@ function renderPlannerMemberPicker(selectedIds = []) {
             <label class="member-picker-row">
                 <input type="checkbox" value="${user.id}" ${selected.has(Number(user.id)) ? "checked" : ""}>
                 <span class="mini-avatar">${escapeHtml(user.initials || initialsFromName(user.name))}</span>
-                ${escapeHtml(user.name)}
+                <span class="member-picker-name">${escapeHtml(user.name)}</span>
+                <span class="member-team-badge">${escapeHtml((user.teamIds || [user.teamId]).filter(Boolean).join(", ").toUpperCase())}</span>
             </label>
         `).join("") || `<div class="empty-mini">No members in this team.</div>`;
 }
@@ -2442,6 +2482,14 @@ async function handlePlannerProjectChange() {
     await loadPlannerTicketOptions();
 }
 
+async function handlePlannerProjectSearch() {
+    const project = findPlannerProject(els.plannerTaskProjectSearch.value);
+    els.plannerTaskProject.value = project?.id || "";
+    if (project) {
+        await handlePlannerProjectChange();
+    }
+}
+
 async function loadPlannerTicketOptions() {
     const query = els.plannerTaskRedmineSearch.value.trim();
     const projectId = els.plannerTaskProject.value;
@@ -2474,8 +2522,37 @@ function applyPlannerLinkedTicket(ticket) {
     renderPlannerMemberPicker(ticket.assigneeIds || []);
 }
 
+function clampPlannerProgressInput() {
+    const raw = els.plannerTaskProgress.value;
+    if (raw === "") {
+        return;
+    }
+    const clamped = clampProgress(raw);
+    if (String(clamped) !== raw) {
+        els.plannerTaskProgress.value = clamped;
+    }
+}
+
+function clampProgress(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+        return 0;
+    }
+    return Math.max(0, Math.min(100, Math.round(numeric)));
+}
+
 async function savePlannerTask(event) {
     event.preventDefault();
+    const selectedProject = findPlannerProject(els.plannerTaskProjectSearch.value);
+    if (selectedProject) {
+        els.plannerTaskProject.value = selectedProject.id;
+    }
+    if (!els.plannerTaskProject.value) {
+        els.plannerTaskError.textContent = "Select a Redmine project from the project list.";
+        els.plannerTaskError.classList.remove("is-hidden");
+        return;
+    }
+    clampPlannerProgressInput();
     const memberIds = [...els.plannerTaskMembers.querySelectorAll("input[type='checkbox']:checked")].map((input) => Number(input.value));
     const body = {
         teamId: els.plannerTaskTeam.value,
@@ -2485,7 +2562,7 @@ async function savePlannerTask(event) {
         statusId: els.plannerTaskStatus.value,
         title: els.plannerTaskTitleInput.value,
         description: els.plannerTaskDescription.value,
-        progress: Number(els.plannerTaskProgress.value || 0),
+        progress: clampProgress(els.plannerTaskProgress.value),
         startDate: els.plannerTaskStart.value,
         dueDate: els.plannerTaskDue.value,
         memberIds

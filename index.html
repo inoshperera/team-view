@@ -272,7 +272,9 @@
                     </label>
                     <label class="field">
                         <span>Project *</span>
-                        <select id="plannerTaskProject"></select>
+                        <input id="plannerTaskProjectSearch" list="plannerProjectOptions" required placeholder="Search Redmine projects">
+                        <input id="plannerTaskProject" type="hidden">
+                        <datalist id="plannerProjectOptions"></datalist>
                     </label>
                     <label class="field">
                         <span>Category</span>
@@ -284,7 +286,7 @@
                     </label>
                     <label class="field">
                         <span>Redmine ticket</span>
-                        <input id="plannerTaskRedmineSearch" list="plannerTicketOptions" placeholder="Paste link, type issue ID, or search recent tickets">
+                        <input id="plannerTaskRedmineSearch" list="plannerTicketOptions" placeholder="Recent tickets, issue ID, or Redmine link">
                         <datalist id="plannerTicketOptions"></datalist>
                     </label>
                     <label class="field">
@@ -293,7 +295,7 @@
                     </label>
                     <label class="field">
                         <span>Progress (%)</span>
-                        <input id="plannerTaskProgress" type="number" min="0" max="100" value="0">
+                        <input id="plannerTaskProgress" type="number" min="0" max="100" step="1" inputmode="numeric" value="0">
                     </label>
                     <label class="field">
                         <span>Start date</span>
