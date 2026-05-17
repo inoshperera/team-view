@@ -555,10 +555,13 @@ async function loadPlannerBootstrap() {
         dbId: user.id
     }));
     state.members = state.users.map((user) => ({ id: user.redmineUserId || user.id, name: user.name, active: true }));
-    if (!state.planner.filters.teamId) {
-        state.planner.filters.teamId = state.auth.user?.role === "lead"
-            ? state.auth.user.teamId || state.planner.teams[0]?.id || ""
-            : "";
+    if (state.auth.user?.role === "lead") {
+        const validTeamIds = new Set(state.planner.teams.map((t) => t.id));
+        if (!validTeamIds.has(state.planner.filters.teamId)) {
+            state.planner.filters.teamId = state.auth.user.teamId || state.planner.teams[0]?.id || "";
+        }
+    } else if (!state.planner.filters.teamId) {
+        state.planner.filters.teamId = "";
     }
     state.work.teamId = state.planner.filters.teamId || state.teams[0]?.id || "";
 }
