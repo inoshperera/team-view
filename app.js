@@ -116,12 +116,12 @@ const els = {
     emptyState: document.getElementById("emptyState"),
     notice: document.getElementById("globalNotice"),
     refreshButton: document.getElementById("refreshButton"),
-    logoutButton: document.getElementById("logoutButton"),
+    logoutButton: null,
     addPlannerTaskButton: document.getElementById("addPlannerTaskButton"),
     plannerDrilldownButton: document.getElementById("plannerDrilldownButton"),
     plannerUserChip: document.getElementById("plannerUserChip"),
-    settingsButton: document.getElementById("settingsButton"),
-    freshnessLabel: document.getElementById("freshnessLabel"),
+    settingsButton: null,
+    freshnessLabel: null,
     workingDayLabel: document.getElementById("workingDayLabel"),
     viewSelect: document.getElementById("viewSelect"),
     periodPanel: document.getElementById("periodPanel"),
@@ -436,7 +436,6 @@ function createTeamDraft(teams, openTeamId = "") {
 
 function bindEvents() {
     els.loginForm.addEventListener("submit", handleLoginSubmit);
-    els.logoutButton.addEventListener("click", handleLogout);
     els.addPlannerTaskButton.addEventListener("click", () => openPlannerEditor(null));
     els.plannerDrilldownButton.addEventListener("click", () => {
         state.view = "work-overview";
@@ -452,7 +451,6 @@ function bindEvents() {
     els.periodSelect.addEventListener("change", handlePeriodPresetChange);
     els.applyRangeButton.addEventListener("click", applyCustomRange);
     els.closeDetailButton.addEventListener("click", closeDetailView);
-    els.settingsButton.addEventListener("click", openSettings);
     els.closeSettingsButton.addEventListener("click", closeSettings);
     els.saveTeamsButton.addEventListener("click", saveTeamConfigToFile);
     els.workScopeMode.addEventListener("change", handleWorkScopeModeChange);
@@ -482,6 +480,12 @@ function bindEvents() {
             state.statusFilter = button.dataset.statusFilter;
             render();
         });
+    });
+    document.addEventListener("click", () => {
+        const menu = document.getElementById("userMenu");
+        if (menu) menu.classList.add("is-hidden");
+        const toggle = document.getElementById("userChipToggle");
+        if (toggle) toggle.setAttribute("aria-expanded", "false");
     });
 }
 
@@ -790,7 +794,7 @@ function renderStaticHeader() {
         return;
     }
     els.workingDayLabel.textContent = state.view === "work-overview"
-        ? `Work Overview · ${describeWorkScope()}`
+        ? `Redmine Overview · ${describeWorkScope()}`
         : `Period ${state.period.label}`;
 }
 
@@ -860,7 +864,7 @@ async function refreshWorkOverview() {
         if (state.work.previousSummary) {
             state.work.summary = { ...state.work.previousSummary, stale: true };
         }
-        setRefreshState("failed", error.message || "Unable to load Work Overview.");
+        setRefreshState("failed", error.message || "Unable to load Redmine Overview.");
     }
 
     render();
@@ -1821,8 +1825,6 @@ function renderViewShell() {
     els.periodPanel.classList.toggle("is-hidden", isWork || isPlanner);
     els.workControls.classList.toggle("is-hidden", !isWork);
     els.plannerControls.classList.toggle("is-hidden", !isPlanner);
-    els.settingsButton.classList.toggle("is-hidden", !isWork);
-    els.logoutButton.classList.toggle("is-hidden", !state.auth.user);
     els.addPlannerTaskButton.classList.toggle("is-hidden", !isPlanner);
     els.plannerDrilldownButton.classList.toggle("is-hidden", !isPlanner);
     els.plannerUserChip.classList.toggle("is-hidden", !state.auth.user);
@@ -1849,14 +1851,6 @@ function renderRefreshState() {
         ? `<span class="spinner spinner-button" aria-hidden="true"></span><span>Refreshing</span>`
         : "Refresh";
     renderStaticHeader();
-
-    if (state.refresh.lastSuccessfulAt) {
-        els.freshnessLabel.textContent = `Updated ${formatTime(state.refresh.lastSuccessfulAt)}`;
-    } else if (state.refresh.state === "loading") {
-        els.freshnessLabel.textContent = "Refreshing";
-    } else {
-        els.freshnessLabel.textContent = "Not loaded yet";
-    }
 
     if (!state.refresh.message) {
         els.notice.classList.add("is-hidden");
@@ -1913,11 +1907,37 @@ function renderPlannerUserChip() {
     }
     const user = state.auth.user;
     const initialsText = initialsFromName(user.displayName || user.username);
+    const avatarColor = user.avatarColor || "av-a";
+    const roleLabel = user.role === "admin" ? "Admin" : user.role;
     els.plannerUserChip.innerHTML = `
-        <span class="planner-avatar">${escapeHtml(initialsText)}</span>
-        <span class="planner-user-name">${escapeHtml(user.displayName || user.username)}</span>
-        <span class="planner-user-role">${escapeHtml(user.role === "admin" ? "Admin" : user.role)}</span>
+        <button class="planner-user-chip" type="button" aria-haspopup="true" aria-expanded="false" id="userChipToggle">
+            <span class="planner-avatar ${escapeHtml(avatarColor)}">${escapeHtml(initialsText)}</span>
+            <span class="planner-user-name">${escapeHtml(user.displayName || user.username)}</span>
+            <span class="planner-user-role">${escapeHtml(roleLabel)}</span>
+        </button>
+        <div class="user-menu is-hidden" id="userMenu">
+            <button class="user-menu-item" type="button" id="userMenuSettings">Settings</button>
+            <button class="user-menu-item" type="button" id="userMenuLogout">Sign out</button>
+        </div>
     `;
+    document.getElementById("userChipToggle").addEventListener("click", (e) => {
+        e.stopPropagation();
+        const menu = document.getElementById("userMenu");
+        const isOpen = !menu.classList.contains("is-hidden");
+        menu.classList.toggle("is-hidden", isOpen);
+        e.currentTarget.setAttribute("aria-expanded", String(!isOpen));
+    });
+    document.getElementById("userMenuSettings").addEventListener("click", () => {
+        document.getElementById("userMenu").classList.add("is-hidden");
+        state.view = "work-overview";
+        els.viewSelect.value = "work-overview";
+        render();
+        openSettings();
+    });
+    document.getElementById("userMenuLogout").addEventListener("click", () => {
+        document.getElementById("userMenu").classList.add("is-hidden");
+        handleLogout();
+    });
 }
 
 function renderPlanner() {

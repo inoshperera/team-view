@@ -41,21 +41,18 @@
                 <h1>Team Activity Overview</h1>
             </div>
             <div class="topbar-actions">
-                <div class="planner-user-chip is-hidden" id="plannerUserChip"></div>
                 <label class="field compact-field">
                     <span>View</span>
                     <select id="viewSelect">
                         <option value="planner">High-Level Planner</option>
-                        <option value="work-overview">Work Overview</option>
+                        <option value="work-overview">Redmine Overview</option>
                         <option value="time-logs">Time Logs</option>
                     </select>
                 </label>
-                <div class="freshness" id="freshnessLabel">Not loaded yet</div>
-                <button class="secondary-button is-hidden" id="plannerDrilldownButton" type="button">Drill-down to Work Overview</button>
-                <button class="secondary-button is-hidden" id="logoutButton" type="button">Sign out</button>
+                <button class="secondary-button is-hidden" id="plannerDrilldownButton" type="button">Drill-down to Redmine Overview</button>
                 <button class="refresh-button is-hidden" id="addPlannerTaskButton" type="button">Add task</button>
-                <button class="secondary-button is-hidden" id="settingsButton" type="button">Settings</button>
                 <button class="refresh-button" id="refreshButton" type="button">Refresh</button>
+                <div class="user-chip-wrapper is-hidden" id="plannerUserChip"></div>
             </div>
         </header>
 
