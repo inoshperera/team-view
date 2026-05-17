@@ -195,7 +195,9 @@ const els = {
     plannerTaskProject: document.getElementById("plannerTaskProject"),
     plannerProjectOptions: document.getElementById("plannerProjectOptions"),
     plannerTaskCategory: document.getElementById("plannerTaskCategory"),
+    plannerTaskCategoryChoices: document.getElementById("plannerTaskCategoryChoices"),
     plannerTaskPriority: document.getElementById("plannerTaskPriority"),
+    plannerTaskPriorityChoices: document.getElementById("plannerTaskPriorityChoices"),
     plannerTaskRedmineSearch: document.getElementById("plannerTaskRedmineSearch"),
     plannerTicketOptions: document.getElementById("plannerTicketOptions"),
     plannerTaskStatus: document.getElementById("plannerTaskStatus"),
@@ -1987,7 +1989,7 @@ function renderPlannerTaskCard(task) {
             </div>
             <div class="planner-members">
                 <span>Members (${task.members?.length || 0})</span>
-                <div>${(task.members || []).map((member) => `<span class="member-pill"><span class="mini-avatar">${escapeHtml(member.initials || initialsFromName(member.name))}</span>${escapeHtml(member.name)}</span>`).join("") || `<span class="no-members">No members assigned</span>`}</div>
+                <div>${(task.members || []).map((member) => `<span class="member-pill"><span class="mini-avatar ${escapeHtml(member.avatarColor || "")}">${escapeHtml(member.initials || initialsFromName(member.name))}</span>${escapeHtml(member.name)}</span>`).join("") || `<span class="no-members">No members assigned</span>`}</div>
             </div>
             <button class="secondary-button planner-edit-button" type="button" data-planner-edit="${task.id}">Edit</button>
         </article>
@@ -2378,8 +2380,8 @@ async function openPlannerEditor(task) {
     els.plannerTaskDescription.value = task?.description || "";
     els.plannerTaskTeam.value = task?.teamId || state.planner.filters.teamId || state.auth.user?.teamId || state.planner.teams[0]?.id || "";
     setPlannerProjectValue(task?.projectId || state.planner.projects[0]?.id || "");
-    els.plannerTaskCategory.value = task?.categoryId || "dev";
-    els.plannerTaskPriority.value = task?.priorityId || "medium";
+    setPlannerChoiceValue("category", task?.categoryId || "dev");
+    setPlannerChoiceValue("priority", task?.priorityId || "medium");
     els.plannerTaskStatus.value = task?.statusId || "working";
     els.plannerTaskProgress.value = task?.progress || 0;
     els.plannerTaskStart.value = task?.startDate || formatLocalDate(new Date());
@@ -2403,9 +2405,40 @@ function fillPlannerEditorOptions(task) {
     els.plannerTaskTeam.disabled = !canPickTeam;
     els.plannerTaskTeam.innerHTML = state.planner.teams.map((team) => `<option value="${escapeHtml(team.id)}">${escapeHtml(team.name)}</option>`).join("");
     els.plannerProjectOptions.innerHTML = state.planner.projects.map((project) => `<option value="${escapeHtml(project.name)}">${escapeHtml(project.redmineIdentifier || project.source || "")}</option>`).join("");
-    els.plannerTaskCategory.innerHTML = state.planner.categories.map((item) => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("");
-    els.plannerTaskPriority.innerHTML = state.planner.priorities.map((item) => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("");
+    renderPlannerChoiceGroup("category");
+    renderPlannerChoiceGroup("priority");
     els.plannerTaskStatus.innerHTML = state.planner.statuses.map((item) => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("");
+}
+
+function renderPlannerChoiceGroup(kind) {
+    const isPriority = kind === "priority";
+    const items = isPriority ? state.planner.priorities : state.planner.categories;
+    const container = isPriority ? els.plannerTaskPriorityChoices : els.plannerTaskCategoryChoices;
+    const input = isPriority ? els.plannerTaskPriority : els.plannerTaskCategory;
+    container.innerHTML = items.map((item) => {
+        const dot = isPriority ? `<span class="priority-dot ${escapeHtml(item.colorClass || "")}"></span>` : "";
+        return `
+            <button class="planner-choice" type="button" role="radio" aria-checked="false" data-${kind}-choice="${escapeHtml(item.id)}">
+                ${dot}${escapeHtml(item.label)}
+            </button>
+        `;
+    }).join("");
+    container.querySelectorAll(`[data-${kind}-choice]`).forEach((button) => {
+        button.addEventListener("click", () => setPlannerChoiceValue(kind, button.dataset[`${kind}Choice`]));
+    });
+    setPlannerChoiceValue(kind, input.value || items[0]?.id || "");
+}
+
+function setPlannerChoiceValue(kind, value) {
+    const isPriority = kind === "priority";
+    const input = isPriority ? els.plannerTaskPriority : els.plannerTaskCategory;
+    const container = isPriority ? els.plannerTaskPriorityChoices : els.plannerTaskCategoryChoices;
+    input.value = value || "";
+    container?.querySelectorAll(".planner-choice").forEach((button) => {
+        const selected = button.dataset[`${kind}Choice`] === input.value;
+        button.classList.toggle("is-selected", selected);
+        button.setAttribute("aria-checked", selected ? "true" : "false");
+    });
 }
 
 function setPlannerProjectValue(projectId) {
@@ -2440,12 +2473,12 @@ function renderPlannerMemberPicker(selectedIds = []) {
     els.plannerTaskMembers.innerHTML = locked
         ? (ids || []).map((id) => {
             const user = state.planner.users.find((item) => Number(item.id) === Number(id));
-            return user ? `<div class="member-picker-row"><span class="mini-avatar">${escapeHtml(user.initials || initialsFromName(user.name))}</span>${escapeHtml(user.name)}<small>Synced from Redmine</small></div>` : "";
+            return user ? `<div class="member-picker-row"><span class="mini-avatar ${escapeHtml(user.avatarColor || "")}">${escapeHtml(user.initials || initialsFromName(user.name))}</span>${escapeHtml(user.name)}<small>Synced from Redmine</small></div>` : "";
         }).join("") || `<div class="empty-mini">No assignees on this Redmine ticket.</div>`
         : users.map((user) => `
             <label class="member-picker-row">
                 <input type="checkbox" value="${user.id}" ${selected.has(Number(user.id)) ? "checked" : ""}>
-                <span class="mini-avatar">${escapeHtml(user.initials || initialsFromName(user.name))}</span>
+                <span class="mini-avatar ${escapeHtml(user.avatarColor || "")}">${escapeHtml(user.initials || initialsFromName(user.name))}</span>
                 <span class="member-picker-name">${escapeHtml(user.name)}</span>
                 <span class="member-team-badge">${escapeHtml((user.teamIds || [user.teamId]).filter(Boolean).join(", ").toUpperCase())}</span>
             </label>
@@ -2514,7 +2547,7 @@ function applyPlannerLinkedTicket(ticket) {
         memberIds: ticket.assigneeIds || []
     };
     els.plannerTaskStatus.value = ticket.statusId || "working";
-    els.plannerTaskPriority.value = ticket.priorityId || els.plannerTaskPriority.value;
+    setPlannerChoiceValue("priority", ticket.priorityId || els.plannerTaskPriority.value);
     els.plannerTaskProgress.value = ticket.progress || 0;
     els.plannerTaskStart.value = ticket.startDate || "";
     els.plannerTaskDue.value = ticket.dueDate || "";

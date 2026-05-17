@@ -276,13 +276,15 @@
                         <input id="plannerTaskProject" type="hidden">
                         <datalist id="plannerProjectOptions"></datalist>
                     </label>
-                    <label class="field">
+                    <label class="field full">
                         <span>Category</span>
-                        <select id="plannerTaskCategory"></select>
+                        <input id="plannerTaskCategory" type="hidden">
+                        <div class="planner-choice-row category-choice-row" id="plannerTaskCategoryChoices" role="radiogroup" aria-label="Category"></div>
                     </label>
-                    <label class="field">
+                    <label class="field full">
                         <span>Priority</span>
-                        <select id="plannerTaskPriority"></select>
+                        <input id="plannerTaskPriority" type="hidden">
+                        <div class="planner-choice-row priority-choice-row" id="plannerTaskPriorityChoices" role="radiogroup" aria-label="Priority"></div>
                     </label>
                     <label class="field">
                         <span>Redmine ticket</span>
