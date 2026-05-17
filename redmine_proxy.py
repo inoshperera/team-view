@@ -111,11 +111,13 @@ class TeamViewHandler(BaseHTTPRequestHandler):
         if path == "/api/auth/me" and method == "GET":
             self.json(200, {"user": services.user_payload(user, services.primary_team_for_user(DB, user["user_id"]))})
         elif path == "/api/bootstrap" and method == "GET":
+            db_user = self.db_user(user)
+            lead_teams = services.teams_for_user(DB, db_user["id"]) if db_user["role"] == "lead" else None
             self.json(200, {
                 "user": services.user_payload(user, services.primary_team_for_user(DB, user["user_id"])),
-                "teams": services.list_teams(DB),
+                "teams": services.list_teams(DB, restrict_to=lead_teams),
                 "users": services.list_users(DB),
-                "projects": services.list_projects(DB),
+                "projects": services.list_projects(DB, restrict_to_teams=lead_teams),
                 **services.list_lookups(DB),
             })
         elif path == "/api/teams" and method == "GET":
@@ -127,7 +129,9 @@ class TeamViewHandler(BaseHTTPRequestHandler):
                 raise KeyError("Team not found.")
             self.json(200, {"team": team})
         elif path == "/api/projects" and method == "GET":
-            self.json(200, {"projects": services.list_projects(DB)})
+            db_user = self.db_user(user)
+            lead_teams = services.teams_for_user(DB, db_user["id"]) if db_user["role"] == "lead" else None
+            self.json(200, {"projects": services.list_projects(DB, restrict_to_teams=lead_teams)})
         elif path == "/api/redmine/projects" and method == "GET":
             projects = services.list_redmine_projects(DB, REDMINE, user.get("redmine_api_key"), query.get("q", ""))
             self.json(200, {"projects": projects})

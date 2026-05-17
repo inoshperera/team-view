@@ -129,17 +129,21 @@ def logout(db, cookie_header):
 
 
 def primary_team_for_user(db, user_id):
-    row = db.one(
+    rows = teams_for_user(db, user_id)
+    return rows[0] if rows else None
+
+
+def teams_for_user(db, user_id):
+    rows = db.query(
         """
-        SELECT t.id FROM teams t
+        SELECT DISTINCT t.id FROM teams t
         LEFT JOIN team_members tm ON tm.team_id=t.id
         WHERE t.lead_user_id=%s OR tm.user_id=%s
         ORDER BY t.lead_user_id=%s DESC, t.name
-        LIMIT 1
         """,
         (user_id, user_id, user_id),
     )
-    return row["id"] if row else None
+    return [row["id"] for row in rows]
 
 
 def migrate_team_config(db):
@@ -186,15 +190,24 @@ def list_lookups(db):
     }
 
 
-def list_teams(db):
+def list_teams(db, restrict_to=None):
+    extra = ""
+    args = []
+    if restrict_to is not None:
+        if not restrict_to:
+            return []
+        placeholders = ",".join(["%s"] * len(restrict_to))
+        extra = f" AND t.id IN ({placeholders})"
+        args = list(restrict_to)
     teams = db.query(
-        """
+        f"""
         SELECT t.*, COUNT(tm.user_id) AS memberCount
         FROM teams t LEFT JOIN team_members tm ON tm.team_id=t.id
-        WHERE t.is_active=1
+        WHERE t.is_active=1{extra}
         GROUP BY t.id
         ORDER BY t.name
-        """
+        """,
+        args,
     )
     return [{"id": t["id"], "name": t["name"], "memberCount": t["memberCount"]} for t in teams]
 
@@ -313,12 +326,21 @@ def member_payload(user, team_id=None, team_ids=None):
     }
 
 
-def list_projects(db):
+def list_projects(db, restrict_to_teams=None):
+    extra = ""
+    args = []
+    if restrict_to_teams is not None:
+        if not restrict_to_teams:
+            return []
+        placeholders = ",".join(["%s"] * len(restrict_to_teams))
+        extra = f" AND (owner_team_id IN ({placeholders}) OR owner_team_id IS NULL)"
+        args = list(restrict_to_teams)
     return db.query(
-        """
+        f"""
         SELECT id,name,source,redmine_identifier AS redmineIdentifier,owner_team_id AS ownerTeamId
-        FROM projects WHERE is_active=1 ORDER BY source DESC,name
-        """
+        FROM projects WHERE is_active=1{extra} ORDER BY source DESC,name
+        """,
+        args,
     )
 
 
@@ -556,9 +578,13 @@ def list_tasks(db, user, filters):
     where = ["t.deleted_at IS NULL"]
     args = []
     if user["role"] == "lead":
-        team_id = primary_team_for_user(db, user["id"])
-        where.append("t.team_id=%s")
-        args.append(team_id or "")
+        lead_teams = teams_for_user(db, user["id"])
+        if lead_teams:
+            placeholders = ",".join(["%s"] * len(lead_teams))
+            where.append(f"t.team_id IN ({placeholders})")
+            args.extend(lead_teams)
+        else:
+            where.append("1=0")
     elif filters.get("team_id"):
         where.append("t.team_id=%s")
         args.append(filters["team_id"])
@@ -634,6 +660,28 @@ def task_payload(db, row):
     }
 
 
+def _synced_fields_changed(existing, payload):
+    field_map = {
+        "statusId": "statusId",
+        "progress": "progress",
+        "startDate": "startDate",
+        "dueDate": "dueDate",
+        "memberIds": "memberIds",
+    }
+    for payload_key, existing_key in field_map.items():
+        if payload_key not in payload:
+            continue
+        incoming = payload[payload_key]
+        current = existing.get(existing_key)
+        if payload_key == "memberIds":
+            if sorted(str(x) for x in (incoming or [])) != sorted(str(x) for x in (current or [])):
+                return True
+        else:
+            if str(incoming or "") != str(current or ""):
+                return True
+    return False
+
+
 def save_task(db, user, payload, task_id=None):
     if not can_mutate_team(db, user, payload.get("teamId")):
         raise PermissionError("You do not have access to this team.")
@@ -644,7 +692,7 @@ def save_task(db, user, payload, task_id=None):
                 existing = get_task(db, task_id)
                 if not existing:
                     raise KeyError("Task not found.")
-                if existing["redmineLinked"] and any(key in payload for key in SYNCED_FIELDS):
+                if existing["redmineLinked"] and _synced_fields_changed(existing, payload):
                     raise ValueError("Synced fields are owned by Redmine. Unlink the task before editing them.")
                 cursor.execute(
                     """
@@ -699,7 +747,7 @@ def can_mutate_team(db, user, team_id):
     if user["role"] in ("manager", "admin"):
         return True
     if user["role"] == "lead":
-        return primary_team_for_user(db, user["id"]) == team_id
+        return team_id in teams_for_user(db, user["id"])
     return False
 
 
