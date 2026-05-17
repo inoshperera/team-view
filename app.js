@@ -1992,7 +1992,7 @@ function nonePrioritySortedTasks(tasks) {
 
 function plannerLaneItems() {
     return state.planner.groupMode === "priority"
-        ? state.planner.priorities
+        ? state.planner.priorities.filter((priority) => priority.id !== "none")
         : state.planner.categories;
 }
 
