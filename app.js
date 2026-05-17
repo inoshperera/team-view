@@ -118,7 +118,7 @@ const els = {
     refreshButton: document.getElementById("refreshButton"),
     logoutButton: null,
     addPlannerTaskButton: document.getElementById("addPlannerTaskButton"),
-    plannerDrilldownButton: document.getElementById("plannerDrilldownButton"),
+    plannerDrilldownButton: null,
     plannerUserChip: document.getElementById("plannerUserChip"),
     settingsButton: null,
     freshnessLabel: null,
@@ -437,15 +437,7 @@ function createTeamDraft(teams, openTeamId = "") {
 function bindEvents() {
     els.loginForm.addEventListener("submit", handleLoginSubmit);
     els.addPlannerTaskButton.addEventListener("click", () => openPlannerEditor(null));
-    els.plannerDrilldownButton.addEventListener("click", () => {
-        state.view = "work-overview";
-        els.viewSelect.value = "work-overview";
-        state.work.mode = "team";
-        state.work.teamId = state.planner.filters.teamId || state.auth.user?.teamId || state.teams[0]?.id || "";
-        syncWorkControls();
-        refreshWorkOverview();
-        render();
-    });
+
     els.refreshButton.addEventListener("click", refreshActiveView);
     els.viewSelect.addEventListener("change", handleViewChange);
     els.periodSelect.addEventListener("change", handlePeriodPresetChange);
@@ -1826,9 +1818,9 @@ function renderViewShell() {
     els.workControls.classList.toggle("is-hidden", !isWork);
     els.plannerControls.classList.toggle("is-hidden", !isPlanner);
     els.addPlannerTaskButton.classList.toggle("is-hidden", !isPlanner);
-    els.plannerDrilldownButton.classList.toggle("is-hidden", !isPlanner);
+
     els.plannerUserChip.classList.toggle("is-hidden", !state.auth.user);
-    els.refreshButton.classList.toggle("is-hidden", false);
+
     els.timeSummaryStrip.classList.toggle("is-hidden", isWork || isPlanner);
     els.workSummaryStrip.classList.toggle("is-hidden", !isWork);
     els.plannerSummaryStrip.classList.toggle("is-hidden", !isPlanner);
@@ -1846,10 +1838,9 @@ function renderViewShell() {
 }
 
 function renderRefreshState() {
-    els.refreshButton.disabled = state.refresh.state === "loading";
-    els.refreshButton.innerHTML = state.refresh.state === "loading"
-        ? `<span class="spinner spinner-button" aria-hidden="true"></span><span>Refreshing</span>`
-        : "Refresh";
+    const isLoading = state.refresh.state === "loading";
+    els.refreshButton.disabled = isLoading;
+    els.refreshButton.classList.toggle("is-spinning", isLoading);
     renderStaticHeader();
 
     if (!state.refresh.message) {

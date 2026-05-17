@@ -432,30 +432,31 @@ def ensure_project(db, project):
     if not identifier:
         identifier = f"redmine-{redmine_id or uuid.uuid4()}"
     name = project.get("name") or identifier or "Redmine project"
+
     if redmine_id:
-        db.execute(
-            """
-            INSERT INTO projects (name,source,redmine_project_id,redmine_identifier)
-            VALUES (%s,'redmine',%s,%s)
-            ON DUPLICATE KEY UPDATE name=VALUES(name), redmine_identifier=VALUES(redmine_identifier), is_active=1
-            """,
-            (name, redmine_id, identifier),
-        )
         row = db.one("SELECT id FROM projects WHERE redmine_project_id=%s", (redmine_id,))
         if row:
+            db.execute("UPDATE projects SET name=%s, is_active=1 WHERE id=%s", (name, row["id"]))
             return row["id"]
-        row = db.one("SELECT id FROM projects WHERE redmine_identifier=%s", (identifier,))
-        if row:
-            return row["id"]
+
+    row = db.one("SELECT id FROM projects WHERE redmine_identifier=%s", (identifier,))
+    if row:
+        if redmine_id and not row.get("redmine_project_id"):
+            db.execute(
+                "UPDATE projects SET name=%s, redmine_project_id=%s, is_active=1 WHERE id=%s",
+                (name, redmine_id, row["id"]),
+            )
+        else:
+            db.execute("UPDATE projects SET name=%s, is_active=1 WHERE id=%s", (name, row["id"]))
+        return row["id"]
+
     db.execute(
-        """
-        INSERT INTO projects (name,source,redmine_identifier)
-        VALUES (%s,'redmine',%s)
-        ON DUPLICATE KEY UPDATE name=VALUES(name), is_active=1
-        """,
-        (name, identifier),
+        "INSERT INTO projects (name,source,redmine_project_id,redmine_identifier) VALUES (%s,'redmine',%s,%s)",
+        (name, redmine_id, identifier),
     )
     row = db.one("SELECT id FROM projects WHERE redmine_identifier=%s", (identifier,))
+    if not row and redmine_id:
+        row = db.one("SELECT id FROM projects WHERE redmine_project_id=%s", (redmine_id,))
     if not row:
         raise ValueError(f"Unable to cache Redmine project {name}.")
     return row["id"]
