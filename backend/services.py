@@ -136,10 +136,11 @@ def primary_team_for_user(db, user_id):
 def teams_for_user(db, user_id):
     rows = db.query(
         """
-        SELECT DISTINCT t.id FROM teams t
+        SELECT t.id, t.name, t.lead_user_id FROM teams t
         LEFT JOIN team_members tm ON tm.team_id=t.id
         WHERE t.lead_user_id=%s OR tm.user_id=%s
-        ORDER BY t.lead_user_id=%s DESC, t.name
+        GROUP BY t.id, t.name, t.lead_user_id
+        ORDER BY (t.lead_user_id=%s) DESC, t.name
         """,
         (user_id, user_id, user_id),
     )
