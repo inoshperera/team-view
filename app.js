@@ -26,7 +26,32 @@ const state = {
     members: [],
     users: [],
     teams: [],
-    view: "work-overview",
+    auth: {
+        user: null,
+        ready: false
+    },
+    view: "planner",
+    planner: {
+        tasks: [],
+        teams: [],
+        users: [],
+        projects: [],
+        categories: [],
+        priorities: [],
+        statuses: [],
+        filters: {
+            teamId: "",
+            memberId: "",
+            category: "",
+            priority: "",
+            status: "",
+            q: ""
+        },
+        layout: "lanes",
+        groupMode: "priority",
+        editorTask: null,
+        linkedTicket: null
+    },
     summaries: [],
     previousSummaries: [],
     issueCache: new Map(),
@@ -79,11 +104,21 @@ const EXCLUDED_WORK_STATUSES = new Set(["New", "Closed", "On hold", "Staged", "T
 const NON_WORKING_COUNT_STATUSES = new Set(["New", "On hold"]);
 
 const els = {
+    loginShell: document.getElementById("loginShell"),
+    loginForm: document.getElementById("loginForm"),
+    loginUsername: document.getElementById("loginUsername"),
+    loginPassword: document.getElementById("loginPassword"),
+    loginError: document.getElementById("loginError"),
     board: document.getElementById("teamBoard"),
     workBoard: document.getElementById("workBoard"),
+    plannerBoard: document.getElementById("plannerBoard"),
     emptyState: document.getElementById("emptyState"),
     notice: document.getElementById("globalNotice"),
     refreshButton: document.getElementById("refreshButton"),
+    logoutButton: document.getElementById("logoutButton"),
+    addPlannerTaskButton: document.getElementById("addPlannerTaskButton"),
+    plannerDrilldownButton: document.getElementById("plannerDrilldownButton"),
+    plannerUserChip: document.getElementById("plannerUserChip"),
     settingsButton: document.getElementById("settingsButton"),
     freshnessLabel: document.getElementById("freshnessLabel"),
     workingDayLabel: document.getElementById("workingDayLabel"),
@@ -103,6 +138,17 @@ const els = {
     workUserSearch: document.getElementById("workUserSearch"),
     workUserPicker: document.getElementById("workUserPicker"),
     showDetailedTickets: document.getElementById("showDetailedTickets"),
+    plannerControls: document.getElementById("plannerControls"),
+    plannerTeamField: document.getElementById("plannerTeamField"),
+    plannerTeamFilter: document.getElementById("plannerTeamFilter"),
+    plannerMemberFilter: document.getElementById("plannerMemberFilter"),
+    plannerCategoryFilter: document.getElementById("plannerCategoryFilter"),
+    plannerPriorityFilter: document.getElementById("plannerPriorityFilter"),
+    plannerSearch: document.getElementById("plannerSearch"),
+    plannerGroupPriority: document.getElementById("plannerGroupPriority"),
+    plannerGroupCategory: document.getElementById("plannerGroupCategory"),
+    plannerLayoutLanes: document.getElementById("plannerLayoutLanes"),
+    plannerLayoutList: document.getElementById("plannerLayoutList"),
     settingsPanel: document.getElementById("settingsPanel"),
     closeSettingsButton: document.getElementById("closeSettingsButton"),
     saveTeamsButton: document.getElementById("saveTeamsButton"),
@@ -117,6 +163,11 @@ const els = {
     workActivePeopleCount: document.getElementById("workActivePeopleCount"),
     workSelectedPeopleCount: document.getElementById("workSelectedPeopleCount"),
     workExcludedCount: document.getElementById("workExcludedCount"),
+    plannerSummaryStrip: document.getElementById("plannerSummaryStrip"),
+    plannerTeamCount: document.getElementById("plannerTeamCount"),
+    plannerOpenCount: document.getElementById("plannerOpenCount"),
+    plannerCriticalCount: document.getElementById("plannerCriticalCount"),
+    plannerOverdueCount: document.getElementById("plannerOverdueCount"),
     detailPanel: document.getElementById("detailPanel"),
     detailTitle: document.getElementById("detailTitle"),
     detailPeriod: document.getElementById("detailPeriod"),
@@ -127,7 +178,29 @@ const els = {
     countActive: document.getElementById("countActive"),
     countRecent: document.getElementById("countRecent"),
     countInactive: document.getElementById("countInactive"),
-    countAttention: document.getElementById("countAttention")
+    countAttention: document.getElementById("countAttention"),
+    plannerTaskModal: document.getElementById("plannerTaskModal"),
+    plannerTaskEyebrow: document.getElementById("plannerTaskEyebrow"),
+    plannerTaskTitle: document.getElementById("plannerTaskTitle"),
+    closePlannerTaskButton: document.getElementById("closePlannerTaskButton"),
+    cancelPlannerTaskButton: document.getElementById("cancelPlannerTaskButton"),
+    deletePlannerTaskButton: document.getElementById("deletePlannerTaskButton"),
+    savePlannerTaskButton: document.getElementById("savePlannerTaskButton"),
+    plannerTaskError: document.getElementById("plannerTaskError"),
+    plannerTaskTitleInput: document.getElementById("plannerTaskTitleInput"),
+    plannerTaskDescription: document.getElementById("plannerTaskDescription"),
+    plannerTaskTeam: document.getElementById("plannerTaskTeam"),
+    plannerTaskProject: document.getElementById("plannerTaskProject"),
+    plannerTaskCategory: document.getElementById("plannerTaskCategory"),
+    plannerTaskPriority: document.getElementById("plannerTaskPriority"),
+    plannerTaskRedmineSearch: document.getElementById("plannerTaskRedmineSearch"),
+    plannerTicketOptions: document.getElementById("plannerTicketOptions"),
+    plannerTaskStatus: document.getElementById("plannerTaskStatus"),
+    plannerTaskProgress: document.getElementById("plannerTaskProgress"),
+    plannerTaskStart: document.getElementById("plannerTaskStart"),
+    plannerTaskDue: document.getElementById("plannerTaskDue"),
+    plannerSyncedPanel: document.getElementById("plannerSyncedPanel"),
+    plannerTaskMembers: document.getElementById("plannerTaskMembers")
 };
 
 async function init() {
@@ -146,16 +219,21 @@ async function init() {
     renderTeamSettings();
     renderStaticHeader();
 
-    await loadRedmineUsersForWorkOverview();
     await loadPublicProxyConfig();
-    await loadWorkPhraseConfig();
-    await loadTeamConfigFromFile();
-
-    if (state.members.length === 0 && state.users.length === 0) {
-        setRefreshState("empty", "No selected team members are configured.");
-        render();
+    await restoreSession();
+    if (!state.auth.user) {
+        showLogin();
         return;
     }
+    await bootstrapAuthenticatedApp();
+}
+
+async function bootstrapAuthenticatedApp() {
+    await loadPlannerBootstrap();
+    await loadWorkPhraseConfig();
+    await loadTeamConfigFromFile();
+    syncPlannerControls();
+    syncWorkControls();
 
     await refreshActiveView();
 }
@@ -351,6 +429,18 @@ function createTeamDraft(teams, openTeamId = "") {
 }
 
 function bindEvents() {
+    els.loginForm.addEventListener("submit", handleLoginSubmit);
+    els.logoutButton.addEventListener("click", handleLogout);
+    els.addPlannerTaskButton.addEventListener("click", () => openPlannerEditor(null));
+    els.plannerDrilldownButton.addEventListener("click", () => {
+        state.view = "work-overview";
+        els.viewSelect.value = "work-overview";
+        state.work.mode = "team";
+        state.work.teamId = state.planner.filters.teamId || state.auth.user?.teamId || state.teams[0]?.id || "";
+        syncWorkControls();
+        refreshWorkOverview();
+        render();
+    });
     els.refreshButton.addEventListener("click", refreshActiveView);
     els.viewSelect.addEventListener("change", handleViewChange);
     els.periodSelect.addEventListener("change", handlePeriodPresetChange);
@@ -364,6 +454,22 @@ function bindEvents() {
     els.workUserSearch.addEventListener("input", handleWorkUserSearch);
     els.showDetailedTickets.addEventListener("change", handleShowDetailedTicketsChange);
     els.addTeamButton.addEventListener("click", addDraftTeam);
+    els.plannerTeamFilter.addEventListener("change", () => updatePlannerFilter("teamId", els.plannerTeamFilter.value));
+    els.plannerMemberFilter.addEventListener("change", () => updatePlannerFilter("memberId", els.plannerMemberFilter.value));
+    els.plannerCategoryFilter.addEventListener("change", () => updatePlannerFilter("category", els.plannerCategoryFilter.value));
+    els.plannerPriorityFilter.addEventListener("change", () => updatePlannerFilter("priority", els.plannerPriorityFilter.value));
+    els.plannerSearch.addEventListener("input", () => updatePlannerFilter("q", els.plannerSearch.value));
+    els.plannerGroupPriority.addEventListener("click", () => setPlannerGroup("priority"));
+    els.plannerGroupCategory.addEventListener("click", () => setPlannerGroup("category"));
+    els.plannerLayoutLanes.addEventListener("click", () => setPlannerLayout("lanes"));
+    els.plannerLayoutList.addEventListener("click", () => setPlannerLayout("list"));
+    els.closePlannerTaskButton.addEventListener("click", closePlannerEditor);
+    els.cancelPlannerTaskButton.addEventListener("click", closePlannerEditor);
+    els.deletePlannerTaskButton.addEventListener("click", deletePlannerTask);
+    els.plannerTaskModal.addEventListener("submit", savePlannerTask);
+    els.plannerTaskTeam.addEventListener("change", () => renderPlannerMemberPicker());
+    els.plannerTaskProject.addEventListener("change", handlePlannerProjectChange);
+    els.plannerTaskRedmineSearch.addEventListener("input", debounce(loadPlannerTicketOptions, 250));
     document.querySelectorAll("[data-status-filter]").forEach((button) => {
         button.addEventListener("click", () => {
             state.statusFilter = button.dataset.statusFilter;
@@ -372,11 +478,161 @@ function bindEvents() {
     });
 }
 
+async function restoreSession() {
+    try {
+        const payload = await apiJson("/api/auth/me");
+        state.auth.user = payload.user;
+        hideLogin();
+    } catch {
+        state.auth.user = null;
+    }
+}
+
+function showLogin() {
+    els.loginShell.classList.remove("is-hidden");
+    document.querySelector(".app-shell").classList.add("is-hidden");
+}
+
+function hideLogin() {
+    els.loginShell.classList.add("is-hidden");
+    document.querySelector(".app-shell").classList.remove("is-hidden");
+}
+
+async function handleLoginSubmit(event) {
+    event.preventDefault();
+    els.loginError.classList.add("is-hidden");
+    try {
+        const payload = await apiJson("/api/auth/login", {
+            method: "POST",
+            body: {
+                username: els.loginUsername.value.trim(),
+                password: els.loginPassword.value
+            }
+        });
+        state.auth.user = payload.user;
+        els.loginPassword.value = "";
+        hideLogin();
+        await bootstrapAuthenticatedApp();
+    } catch (error) {
+        els.loginError.textContent = error.message || "Unable to sign in.";
+        els.loginError.classList.remove("is-hidden");
+    }
+}
+
+async function handleLogout() {
+    await apiJson("/api/auth/logout", { method: "POST" }).catch(() => {});
+    state.auth.user = null;
+    state.planner.tasks = [];
+    showLogin();
+}
+
+async function loadPlannerBootstrap() {
+    const payload = await apiJson("/api/bootstrap");
+    state.auth.user = payload.user;
+    state.planner.teams = payload.teams || [];
+    state.planner.users = payload.users || [];
+    state.planner.projects = payload.projects || [];
+    state.planner.categories = payload.categories || [];
+    state.planner.priorities = payload.priorities || [];
+    state.planner.statuses = payload.statuses || [];
+    state.teams = (payload.teams || []).map((team) => ({
+        id: team.id,
+        name: team.name,
+        memberIds: (payload.users || []).filter((user) => user.teamIds?.includes(team.id)).map((user) => user.redmineUserId || user.id)
+    }));
+    state.users = (payload.users || []).map((user) => ({
+        id: user.redmineUserId || user.id,
+        name: user.name,
+        login: "",
+        active: true,
+        dbId: user.id
+    }));
+    state.members = state.users.map((user) => ({ id: user.redmineUserId || user.id, name: user.name, active: true }));
+    if (!state.planner.filters.teamId) {
+        state.planner.filters.teamId = state.auth.user?.role === "lead"
+            ? state.auth.user.teamId || state.planner.teams[0]?.id || ""
+            : "";
+    }
+    state.work.teamId = state.planner.filters.teamId || state.teams[0]?.id || "";
+}
+
+async function refreshPlanner() {
+    const params = new URLSearchParams();
+    Object.entries(state.planner.filters).forEach(([key, value]) => {
+        if (!value) {
+            return;
+        }
+        const mapped = key === "teamId" ? "team_id" : key === "memberId" ? "member_id" : key;
+        params.set(mapped, value);
+    });
+    setRefreshState("loading", "Loading high-level tasks.");
+    render();
+    try {
+        const payload = await apiJson(`/api/tasks${params.toString() ? `?${params}` : ""}`);
+        state.planner.tasks = payload.tasks || [];
+        setRefreshState("success", "High-level planner loaded.");
+        state.refresh.lastSuccessfulAt = new Date();
+    } catch (error) {
+        setRefreshState("failed", error.message || "Unable to load high-level tasks.");
+    }
+    render();
+}
+
+function syncPlannerControls() {
+    const canSeeAllTeams = ["manager", "admin"].includes(state.auth.user?.role);
+    els.plannerTeamField.classList.toggle("is-hidden", !canSeeAllTeams);
+    els.plannerTeamFilter.innerHTML = `<option value="">All teams</option>${state.planner.teams.map((team) => `<option value="${escapeHtml(team.id)}">${escapeHtml(team.name)}</option>`).join("")}`;
+    els.plannerTeamFilter.value = state.planner.filters.teamId;
+    const users = filteredPlannerUsersForTeam(state.planner.filters.teamId);
+    els.plannerMemberFilter.innerHTML = `<option value="">All members</option>${users.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("")}`;
+    els.plannerMemberFilter.value = state.planner.filters.memberId;
+    els.plannerCategoryFilter.innerHTML = `<option value="">All categories</option>${state.planner.categories.map((item) => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("")}`;
+    els.plannerCategoryFilter.value = state.planner.filters.category;
+    els.plannerPriorityFilter.innerHTML = `<option value="">All priorities</option>${state.planner.priorities.map((item) => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("")}`;
+    els.plannerPriorityFilter.value = state.planner.filters.priority;
+    els.plannerSearch.value = state.planner.filters.q;
+    els.plannerGroupPriority.classList.toggle("is-selected", state.planner.groupMode === "priority");
+    els.plannerGroupCategory.classList.toggle("is-selected", state.planner.groupMode === "category");
+    els.plannerLayoutLanes.classList.toggle("is-selected", state.planner.layout === "lanes");
+    els.plannerLayoutList.classList.toggle("is-selected", state.planner.layout === "list");
+}
+
+function filteredPlannerUsersForTeam(teamId) {
+    if (!teamId) {
+        return state.planner.users;
+    }
+    return state.planner.users.filter((user) => user.teamIds?.includes(teamId));
+}
+
+function updatePlannerFilter(key, value) {
+    state.planner.filters[key] = value;
+    if (key === "teamId") {
+        state.planner.filters.memberId = "";
+    }
+    syncPlannerControls();
+    refreshPlanner();
+}
+
+function setPlannerGroup(groupMode) {
+    state.planner.groupMode = groupMode;
+    syncPlannerControls();
+    renderPlanner();
+}
+
+function setPlannerLayout(layout) {
+    state.planner.layout = layout;
+    syncPlannerControls();
+    renderPlanner();
+}
+
 function handleViewChange() {
     state.view = els.viewSelect.value;
     closeDetailView();
     closeSettings();
     render();
+    if (state.view === "planner" && state.planner.tasks.length === 0) {
+        refreshPlanner();
+    }
     if (state.view === "work-overview" && !state.work.summary && state.members.length > 0) {
         refreshWorkOverview();
     }
@@ -410,6 +666,13 @@ function applyCustomRange() {
 }
 
 async function refreshActiveView() {
+    if (!state.auth.user) {
+        return;
+    }
+    if (state.view === "planner") {
+        await refreshPlanner();
+        return;
+    }
     if (state.view === "work-overview") {
         await refreshWorkOverview();
         return;
@@ -488,6 +751,13 @@ function clearPeriodError() {
 }
 
 function renderStaticHeader() {
+    if (state.view === "planner") {
+        const teamName = state.planner.teams.find((team) => team.id === state.planner.filters.teamId)?.name;
+        els.workingDayLabel.textContent = state.auth.user?.role === "lead"
+            ? `High-level work · ${teamName || "Team"}`
+            : `Management view · ${state.planner.teams.length} teams`;
+        return;
+    }
     els.workingDayLabel.textContent = state.view === "work-overview"
         ? `Work Overview · ${describeWorkScope()}`
         : `Period ${state.period.label}`;
@@ -925,6 +1195,7 @@ async function postJson(path, payload) {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
+            credentials: "include",
             signal: controller.signal
         });
         const text = await response.text();
@@ -1146,7 +1417,7 @@ async function fetchJson(path, params = {}) {
     const timeout = window.setTimeout(() => controller.abort(), state.config.requestTimeoutMs);
 
     try {
-        const response = await fetch(url, { signal: controller.signal });
+        const response = await fetch(url, { signal: controller.signal, credentials: "include" });
         const text = await response.text();
         let payload;
 
@@ -1172,6 +1443,45 @@ async function fetchJson(path, params = {}) {
     } finally {
         window.clearTimeout(timeout);
     }
+}
+
+async function apiJson(path, options = {}) {
+    const url = new URL(`${state.config.proxyUrl}${path}`);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), state.config.requestTimeoutMs);
+    try {
+        const response = await fetch(url, {
+            method: options.method || "GET",
+            headers: options.body ? { "Content-Type": "application/json" } : {},
+            body: options.body ? JSON.stringify(options.body) : undefined,
+            signal: controller.signal,
+            credentials: "include"
+        });
+        const text = await response.text();
+        const payload = text ? JSON.parse(text) : {};
+        if (!response.ok) {
+            throw new Error(formatProxyError(response.status, payload));
+        }
+        return payload;
+    } catch (error) {
+        if (error.name === "AbortError") {
+            throw new Error("The backend request timed out.");
+        }
+        if (error instanceof TypeError) {
+            throw new Error("Unable to reach the local backend.");
+        }
+        throw error;
+    } finally {
+        window.clearTimeout(timeout);
+    }
+}
+
+function debounce(callback, wait) {
+    let timer = 0;
+    return (...args) => {
+        window.clearTimeout(timer);
+        timer = window.setTimeout(() => callback(...args), wait);
+    };
 }
 
 function formatProxyError(status, payload) {
@@ -1461,7 +1771,9 @@ function hasSuspiciousTiming(row) {
 function render() {
     renderViewShell();
     renderRefreshState();
-    if (state.view === "work-overview") {
+    if (state.view === "planner") {
+        renderPlanner();
+    } else if (state.view === "work-overview") {
         renderWorkOverview();
     } else {
         renderCounts();
@@ -1474,14 +1786,27 @@ function render() {
 function renderViewShell() {
     els.viewSelect.value = state.view;
     const isWork = state.view === "work-overview";
-    els.periodPanel.classList.toggle("is-hidden", isWork);
+    const isPlanner = state.view === "planner";
+    els.periodPanel.classList.toggle("is-hidden", isWork || isPlanner);
     els.workControls.classList.toggle("is-hidden", !isWork);
+    els.plannerControls.classList.toggle("is-hidden", !isPlanner);
     els.settingsButton.classList.toggle("is-hidden", !isWork);
-    els.timeSummaryStrip.classList.toggle("is-hidden", isWork);
+    els.logoutButton.classList.toggle("is-hidden", !state.auth.user);
+    els.addPlannerTaskButton.classList.toggle("is-hidden", !isPlanner);
+    els.plannerDrilldownButton.classList.toggle("is-hidden", !isPlanner);
+    els.plannerUserChip.classList.toggle("is-hidden", !state.auth.user);
+    els.refreshButton.classList.toggle("is-hidden", false);
+    els.timeSummaryStrip.classList.toggle("is-hidden", isWork || isPlanner);
     els.workSummaryStrip.classList.toggle("is-hidden", !isWork);
-    els.board.classList.toggle("is-hidden", isWork);
+    els.plannerSummaryStrip.classList.toggle("is-hidden", !isPlanner);
+    els.board.classList.toggle("is-hidden", isWork || isPlanner);
     els.workBoard.classList.toggle("is-hidden", !isWork);
+    els.plannerBoard.classList.toggle("is-hidden", !isPlanner);
     els.settingsPanel.classList.toggle("is-hidden", !isWork || !state.settingsOpen);
+    renderPlannerUserChip();
+    if (isPlanner) {
+        syncPlannerControls();
+    }
     if (isWork) {
         syncWorkControls();
     }
@@ -1548,6 +1873,134 @@ function renderBoard() {
     for (const summary of visibleSummaries) {
         els.board.appendChild(renderMemberCard(summary));
     }
+}
+
+function renderPlannerUserChip() {
+    if (!state.auth.user) {
+        els.plannerUserChip.innerHTML = "";
+        return;
+    }
+    const user = state.auth.user;
+    const initialsText = initialsFromName(user.displayName || user.username);
+    els.plannerUserChip.innerHTML = `
+        <span class="planner-avatar">${escapeHtml(initialsText)}</span>
+        <span class="planner-user-name">${escapeHtml(user.displayName || user.username)}</span>
+        <span class="planner-user-role">${escapeHtml(user.role === "admin" ? "Admin" : user.role)}</span>
+    `;
+}
+
+function renderPlanner() {
+    syncPlannerControls();
+    const tasks = state.planner.tasks;
+    const openTasks = tasks.filter((task) => task.statusId !== "done");
+    const teamsInScope = new Set(tasks.map((task) => task.teamId));
+    els.plannerTeamCount.textContent = state.auth.user?.role === "lead" ? 1 : (teamsInScope.size || state.planner.teams.length);
+    els.plannerOpenCount.textContent = openTasks.length;
+    els.plannerCriticalCount.textContent = openTasks.filter((task) => task.priorityId === "critical").length;
+    els.plannerOverdueCount.textContent = openTasks.filter((task) => isOverdue(task.dueDate)).length;
+    els.plannerBoard.innerHTML = "";
+
+    if (tasks.length === 0) {
+        els.plannerBoard.innerHTML = `<div class="empty-state planner-empty"><h2>No high-level tasks yet</h2><p>Create a task and optionally link it to a Redmine ticket.</p></div>`;
+        return;
+    }
+
+    if (state.planner.layout === "list") {
+        els.plannerBoard.classList.add("is-list");
+        els.plannerBoard.classList.remove("is-lanes");
+        els.plannerBoard.innerHTML = tasks.map(renderPlannerTaskCard).join("");
+    } else {
+        els.plannerBoard.classList.add("is-lanes");
+        els.plannerBoard.classList.remove("is-list");
+        els.plannerBoard.innerHTML = plannerLaneItems().map((lane) => {
+            const laneTasks = tasks.filter((task) => state.planner.groupMode === "priority" ? task.priorityId === lane.id : task.categoryId === lane.id);
+            return `
+                <section class="planner-lane ${escapeHtml(lane.colorClass || "")}">
+                    <div class="planner-lane-title">
+                        <span>${escapeHtml(lane.label)}</span>
+                        <span class="lane-count">${laneTasks.length}</span>
+                    </div>
+                    <div class="planner-lane-stack">
+                        ${laneTasks.length ? laneTasks.map(renderPlannerTaskCard).join("") : `<div class="empty-mini">No tasks</div>`}
+                    </div>
+                </section>
+            `;
+        }).join("");
+    }
+
+    els.plannerBoard.querySelectorAll("[data-planner-edit]").forEach((button) => {
+        button.addEventListener("click", () => {
+            const task = state.planner.tasks.find((item) => String(item.id) === button.dataset.plannerEdit);
+            openPlannerEditor(task);
+        });
+    });
+}
+
+function plannerLaneItems() {
+    return state.planner.groupMode === "priority"
+        ? state.planner.priorities
+        : state.planner.categories;
+}
+
+function renderPlannerTaskCard(task) {
+    const priority = lookup(state.planner.priorities, task.priorityId);
+    const category = lookup(state.planner.categories, task.categoryId);
+    const status = lookup(state.planner.statuses, task.statusId);
+    const team = lookup(state.planner.teams, task.teamId);
+    const due = dueLabel(task.dueDate);
+    return `
+        <article class="planner-task-card ${escapeHtml(priority?.colorClass || "")}">
+            <div class="planner-task-head">
+                <div class="planner-chip-row">
+                    <span class="planner-chip ${escapeHtml(category?.colorClass || "")}">${escapeHtml(category?.label || task.categoryId)}</span>
+                    ${team ? `<span class="planner-chip chip-team">${escapeHtml(team.name)}</span>` : ""}
+                    ${task.redmineLinked ? `<span class="planner-chip chip-synced">Linked</span>` : ""}
+                </div>
+                <span class="status-badge status-active">${escapeHtml(status?.label || task.statusId)}</span>
+            </div>
+            <h2>${escapeHtml(task.title)}</h2>
+            <p>${escapeHtml(task.description || "")}</p>
+            <div class="planner-card-grid">
+                <div><span>Project</span><strong>${escapeHtml(task.projectName || "Project")}</strong></div>
+                <div><span>Priority</span><strong>${escapeHtml(priority?.label || task.priorityId)}</strong></div>
+                <div><span>Due</span><strong class="${due.className}">${escapeHtml(task.dueDate || "Not set")}</strong><small>${escapeHtml(due.label)}</small></div>
+                <div><span>Linked issue</span><strong>${task.issueKey ? escapeHtml(task.issueKey) : "Not linked"}</strong></div>
+                <div><span>Progress</span><strong>${task.progress || 0}%</strong><small class="planner-progress"><i style="width:${task.progress || 0}%"></i></small></div>
+            </div>
+            <div class="planner-members">
+                <span>Members (${task.members?.length || 0})</span>
+                <div>${(task.members || []).map((member) => `<span class="member-pill"><span class="mini-avatar">${escapeHtml(member.initials || initialsFromName(member.name))}</span>${escapeHtml(member.name)}</span>`).join("") || `<span class="no-members">No members assigned</span>`}</div>
+            </div>
+            <button class="secondary-button planner-edit-button" type="button" data-planner-edit="${task.id}">Edit</button>
+        </article>
+    `;
+}
+
+function lookup(items, id) {
+    return (items || []).find((item) => String(item.id) === String(id));
+}
+
+function isOverdue(value) {
+    const date = parseLocalDate(value);
+    return date && date < startOfDay(new Date());
+}
+
+function dueLabel(value) {
+    const date = parseLocalDate(value);
+    if (!date) {
+        return { label: "No due date", className: "" };
+    }
+    if (date < startOfDay(new Date())) {
+        return { label: "Overdue", className: "overdue" };
+    }
+    if (date <= addDays(startOfDay(new Date()), 7)) {
+        return { label: "Due this week", className: "duesoon" };
+    }
+    return { label: "Upcoming", className: "" };
+}
+
+function initialsFromName(name) {
+    return String(name || "U").split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "U";
 }
 
 function renderWorkOverview() {
@@ -1890,6 +2343,179 @@ function renderDetailRow(row) {
             </div>
         </div>
     `;
+}
+
+function openPlannerEditor(task) {
+    state.planner.editorTask = task ? { ...task } : null;
+    state.planner.linkedTicket = task?.redmineLinked ? task : null;
+    els.plannerTaskEyebrow.textContent = task ? `Edit task · ${task.teamId}` : "New task";
+    els.plannerTaskTitle.textContent = task ? "Edit high-level task" : "Add high-level task";
+    els.savePlannerTaskButton.textContent = task ? "Save changes" : "Create task";
+    els.deletePlannerTaskButton.classList.toggle("is-hidden", !task);
+    fillPlannerEditorOptions(task);
+    els.plannerTaskTitleInput.value = task?.title || "";
+    els.plannerTaskDescription.value = task?.description || "";
+    els.plannerTaskTeam.value = task?.teamId || state.planner.filters.teamId || state.auth.user?.teamId || state.planner.teams[0]?.id || "";
+    els.plannerTaskProject.value = task?.projectId || state.planner.projects[0]?.id || "";
+    els.plannerTaskCategory.value = task?.categoryId || "dev";
+    els.plannerTaskPriority.value = task?.priorityId || "medium";
+    els.plannerTaskStatus.value = task?.statusId || "working";
+    els.plannerTaskProgress.value = task?.progress || 0;
+    els.plannerTaskStart.value = task?.startDate || formatLocalDate(new Date());
+    els.plannerTaskDue.value = task?.dueDate || "";
+    els.plannerTaskRedmineSearch.value = task?.issueKey || task?.redmineIssueId || "";
+    renderPlannerSyncedPanel();
+    renderPlannerMemberPicker(task?.memberIds || []);
+    els.plannerTaskError.classList.add("is-hidden");
+    els.plannerTaskModal.classList.remove("is-hidden");
+}
+
+function closePlannerEditor() {
+    state.planner.editorTask = null;
+    state.planner.linkedTicket = null;
+    els.plannerTaskModal.classList.add("is-hidden");
+}
+
+function fillPlannerEditorOptions(task) {
+    const canPickTeam = ["manager", "admin"].includes(state.auth.user?.role);
+    els.plannerTaskTeam.disabled = !canPickTeam;
+    els.plannerTaskTeam.innerHTML = state.planner.teams.map((team) => `<option value="${escapeHtml(team.id)}">${escapeHtml(team.name)}</option>`).join("");
+    els.plannerTaskProject.innerHTML = state.planner.projects.map((project) => `<option value="${project.id}">${escapeHtml(project.name)}</option>`).join("");
+    els.plannerTaskCategory.innerHTML = state.planner.categories.map((item) => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("");
+    els.plannerTaskPriority.innerHTML = state.planner.priorities.map((item) => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("");
+    els.plannerTaskStatus.innerHTML = state.planner.statuses.map((item) => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("");
+}
+
+function renderPlannerMemberPicker(selectedIds = []) {
+    if (!Array.isArray(selectedIds)) {
+        selectedIds = state.planner.editorTask?.memberIds || [];
+    }
+    const selected = new Set(selectedIds.map(Number));
+    const teamId = els.plannerTaskTeam.value;
+    const users = filteredPlannerUsersForTeam(teamId);
+    const locked = Boolean(state.planner.linkedTicket || state.planner.editorTask?.redmineLinked);
+    const ids = locked && state.planner.linkedTicket?.memberIds?.length
+        ? state.planner.linkedTicket.memberIds
+        : selectedIds;
+    els.plannerTaskMembers.classList.toggle("is-locked", locked);
+    els.plannerTaskMembers.innerHTML = locked
+        ? (ids || []).map((id) => {
+            const user = state.planner.users.find((item) => Number(item.id) === Number(id));
+            return user ? `<div class="member-picker-row"><span class="mini-avatar">${escapeHtml(user.initials || initialsFromName(user.name))}</span>${escapeHtml(user.name)}<small>Synced from Redmine</small></div>` : "";
+        }).join("") || `<div class="empty-mini">No assignees on this Redmine ticket.</div>`
+        : users.map((user) => `
+            <label class="member-picker-row">
+                <input type="checkbox" value="${user.id}" ${selected.has(Number(user.id)) ? "checked" : ""}>
+                <span class="mini-avatar">${escapeHtml(user.initials || initialsFromName(user.name))}</span>
+                ${escapeHtml(user.name)}
+            </label>
+        `).join("") || `<div class="empty-mini">No members in this team.</div>`;
+}
+
+function renderPlannerSyncedPanel() {
+    const ticket = state.planner.linkedTicket;
+    els.plannerSyncedPanel.classList.toggle("is-hidden", !ticket);
+    if (!ticket) {
+        return;
+    }
+    els.plannerSyncedPanel.innerHTML = `
+        <div class="synced-head">
+            <div>
+                <strong>Synced fields</strong>
+                <p>Status, progress, dates and assignees are kept in sync with ${escapeHtml(ticket.issueKey || ticket.redmineIssueId)}.</p>
+            </div>
+            <button type="button" class="secondary-button" id="unlinkPlannerTicketButton">Unlink</button>
+        </div>
+    `;
+    els.plannerSyncedPanel.querySelector("#unlinkPlannerTicketButton").addEventListener("click", () => {
+        state.planner.linkedTicket = null;
+        els.plannerTaskRedmineSearch.value = "";
+        renderPlannerSyncedPanel();
+        renderPlannerMemberPicker(state.planner.editorTask?.memberIds || []);
+    });
+}
+
+async function handlePlannerProjectChange() {
+    state.planner.linkedTicket = null;
+    els.plannerTaskRedmineSearch.value = "";
+    renderPlannerSyncedPanel();
+    await loadPlannerTicketOptions();
+}
+
+async function loadPlannerTicketOptions() {
+    const query = els.plannerTaskRedmineSearch.value.trim();
+    const projectId = els.plannerTaskProject.value;
+    if (!projectId && !query) {
+        return;
+    }
+    try {
+        const payload = await apiJson(`/api/redmine/recent-tickets?projectId=${encodeURIComponent(projectId)}&q=${encodeURIComponent(query)}`);
+        els.plannerTicketOptions.innerHTML = (payload.tickets || []).map((ticket) => `<option value="${escapeHtml(ticket.issueKey || ticket.redmineIssueId)}">${escapeHtml(ticket.title)}</option>`).join("");
+        const exact = (payload.tickets || []).find((ticket) => String(ticket.issueKey) === query || String(ticket.redmineIssueId) === query || query.includes(`/issues/${ticket.redmineIssueId}`));
+        if (exact) {
+            applyPlannerLinkedTicket(exact);
+        }
+    } catch {
+        els.plannerTicketOptions.innerHTML = "";
+    }
+}
+
+function applyPlannerLinkedTicket(ticket) {
+    state.planner.linkedTicket = {
+        ...ticket,
+        memberIds: ticket.assigneeIds || []
+    };
+    els.plannerTaskStatus.value = ticket.statusId || "working";
+    els.plannerTaskPriority.value = ticket.priorityId || els.plannerTaskPriority.value;
+    els.plannerTaskProgress.value = ticket.progress || 0;
+    els.plannerTaskStart.value = ticket.startDate || "";
+    els.plannerTaskDue.value = ticket.dueDate || "";
+    renderPlannerSyncedPanel();
+    renderPlannerMemberPicker(ticket.assigneeIds || []);
+}
+
+async function savePlannerTask(event) {
+    event.preventDefault();
+    const memberIds = [...els.plannerTaskMembers.querySelectorAll("input[type='checkbox']:checked")].map((input) => Number(input.value));
+    const body = {
+        teamId: els.plannerTaskTeam.value,
+        projectId: Number(els.plannerTaskProject.value),
+        categoryId: els.plannerTaskCategory.value,
+        priorityId: els.plannerTaskPriority.value,
+        statusId: els.plannerTaskStatus.value,
+        title: els.plannerTaskTitleInput.value,
+        description: els.plannerTaskDescription.value,
+        progress: Number(els.plannerTaskProgress.value || 0),
+        startDate: els.plannerTaskStart.value,
+        dueDate: els.plannerTaskDue.value,
+        memberIds
+    };
+    const task = state.planner.editorTask;
+    try {
+        const saved = await apiJson(task ? `/api/tasks/${task.id}` : "/api/tasks", {
+            method: task ? "PATCH" : "POST",
+            body
+        });
+        const linkValue = els.plannerTaskRedmineSearch.value.trim();
+        if (linkValue && (!task?.redmineLinked || linkValue !== task.issueKey)) {
+            await apiJson(`/api/tasks/${saved.task.id}/link`, { method: "POST", body: { value: linkValue } });
+        }
+        closePlannerEditor();
+        await refreshPlanner();
+    } catch (error) {
+        els.plannerTaskError.textContent = error.message || "Unable to save task.";
+        els.plannerTaskError.classList.remove("is-hidden");
+    }
+}
+
+async function deletePlannerTask() {
+    const task = state.planner.editorTask;
+    if (!task || !window.confirm("Delete this high-level task?")) {
+        return;
+    }
+    await apiJson(`/api/tasks/${task.id}`, { method: "DELETE" });
+    closePlannerEditor();
+    await refreshPlanner();
 }
 
 function countStatuses(summaries) {

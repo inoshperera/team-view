@@ -12,7 +12,11 @@ APP_HOST="${APP_HOST:-localhost}"
 APP_PORT="${APP_PORT:-8000}"
 PROXY_HOST="${PROXY_HOST:-localhost}"
 PROXY_PORT="${PROXY_PORT:-9000}"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
+    PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
+else
+    PYTHON_BIN="${PYTHON_BIN:-python3}"
+fi
 
 usage() {
     cat <<USAGE

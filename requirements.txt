@@ -1,1 +1,1 @@
-# No third-party Python packages are required for the MVP proxy.
+PyMySQL==1.1.3
