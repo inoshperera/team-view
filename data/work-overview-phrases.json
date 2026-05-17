@@ -1,0 +1,110 @@
+{
+    "projectToken": "{project}",
+    "excludedStatuses": [
+        "New",
+        "Closed",
+        "On hold",
+        "Staged",
+        "Testing Rejected"
+    ],
+    "phrases": {
+        "Development Ready": {
+            "Bug": "Queued to fix a bug in project {project}",
+            "New Feature": "Queued to build a new feature in project {project}",
+            "Blocker": "Queued to resolve a blocking issue in project {project}",
+            "Documentation": "Queued to update documentation in project {project}",
+            "Improvement": "Queued to improve existing functionality in project {project}",
+            "Reports": "Queued to update reporting in project {project}",
+            "None": "Queued to work on a task in project {project}",
+            "Task": "Queued to work on a task in project {project}",
+            "QA Automation": "Queued to automate QA coverage in project {project}",
+            "Feature Request": "Queued to build a requested feature in project {project}",
+            "Patch": "Queued to prepare a patch in project {project}",
+            "Training": "Queued to prepare training material in project {project}"
+        },
+        "Design": {
+            "Bug": "Designing the fix for a bug in project {project}",
+            "New Feature": "Designing a new feature in project {project}",
+            "Blocker": "Planning a solution for a blocking issue in project {project}",
+            "Documentation": "Structuring documentation in project {project}",
+            "Improvement": "Designing an improvement in project {project}",
+            "Reports": "Designing reporting changes in project {project}",
+            "None": "Planning a task in project {project}",
+            "Task": "Planning a task in project {project}",
+            "QA Automation": "Designing QA automation in project {project}",
+            "Feature Request": "Designing a requested feature in project {project}",
+            "Patch": "Planning a patch in project {project}",
+            "Training": "Designing training material in project {project}"
+        },
+        "Implementation": {
+            "Bug": "Fixing a bug in project {project}",
+            "New Feature": "Building a new feature in project {project}",
+            "Blocker": "Resolving a blocking issue in project {project}",
+            "Documentation": "Updating documentation in project {project}",
+            "Improvement": "Implementing an improvement in project {project}",
+            "Reports": "Updating reports in project {project}",
+            "None": "Working on a task in project {project}",
+            "Task": "Working on a task in project {project}",
+            "QA Automation": "Building QA automation in project {project}",
+            "Feature Request": "Building a requested feature in project {project}",
+            "Patch": "Preparing a patch in project {project}",
+            "Training": "Preparing training material in project {project}"
+        },
+        "Review": {
+            "Bug": "Reviewing a bug fix in project {project}",
+            "New Feature": "Reviewing a new feature in project {project}",
+            "Blocker": "Reviewing a blocking issue fix in project {project}",
+            "Documentation": "Reviewing documentation in project {project}",
+            "Improvement": "Reviewing an improvement in project {project}",
+            "Reports": "Reviewing reporting changes in project {project}",
+            "None": "Reviewing a task in project {project}",
+            "Task": "Reviewing a task in project {project}",
+            "QA Automation": "Reviewing QA automation in project {project}",
+            "Feature Request": "Reviewing a requested feature in project {project}",
+            "Patch": "Reviewing a patch in project {project}",
+            "Training": "Reviewing training material in project {project}"
+        },
+        "Testing": {
+            "Bug": "Testing a bug fix in project {project}",
+            "New Feature": "Testing a new feature in project {project}",
+            "Blocker": "Testing the fix for a blocking issue in project {project}",
+            "Documentation": "Validating documentation in project {project}",
+            "Improvement": "Testing an improvement in project {project}",
+            "Reports": "Testing reporting changes in project {project}",
+            "None": "Testing a task in project {project}",
+            "Task": "Testing a task in project {project}",
+            "QA Automation": "Validating QA automation in project {project}",
+            "Feature Request": "Testing a requested feature in project {project}",
+            "Patch": "Testing a patch in project {project}",
+            "Training": "Validating training material in project {project}"
+        },
+        "Testing Ready": {
+            "Bug": "Bug fix queued for testing in project {project}",
+            "New Feature": "New feature queued for testing in project {project}",
+            "Blocker": "Blocking issue fix queued for testing in project {project}",
+            "Documentation": "Documentation update queued for validation in project {project}",
+            "Improvement": "Improvement queued for testing in project {project}",
+            "Reports": "Reporting changes queued for testing in project {project}",
+            "None": "Task queued for testing in project {project}",
+            "Task": "Task queued for testing in project {project}",
+            "QA Automation": "QA automation queued for validation in project {project}",
+            "Feature Request": "Requested feature queued for testing in project {project}",
+            "Patch": "Patch queued for testing in project {project}",
+            "Training": "Training material queued for validation in project {project}"
+        },
+        "In Progress": {
+            "Bug": "Working on a bug fix in project {project}",
+            "New Feature": "Working on a new feature in project {project}",
+            "Blocker": "Working on a blocking issue in project {project}",
+            "Documentation": "Working on documentation in project {project}",
+            "Improvement": "Working on an improvement in project {project}",
+            "Reports": "Working on reports in project {project}",
+            "None": "Working on a task in project {project}",
+            "Task": "Working on a task in project {project}",
+            "QA Automation": "Working on QA automation in project {project}",
+            "Feature Request": "Working on a requested feature in project {project}",
+            "Patch": "Working on a patch in project {project}",
+            "Training": "Working on training material in project {project}"
+        }
+    }
+}

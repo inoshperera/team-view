@@ -1,0 +1,1213 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8" />
+    <title>Team Time Tracking Dashboard</title>
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
+
+    <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
+
+    <!-- Tabulator (no jQuery) -->
+    <link href="https://unpkg.com/tabulator-tables@6.2.5/dist/css/tabulator.min.css" rel="stylesheet">
+    <script src="https://unpkg.com/tabulator-tables@6.2.5/dist/js/tabulator.min.js"></script>
+
+    <style>
+        :root{
+            --bg:#f4f6fb;
+            --card:#ffffff;
+            --muted:#6b7280;
+            --accent:#2563eb;
+            --accent-2:#f97316;
+            --radius:10px;
+            --shadow: 0 6px 18px rgba(16,24,40,0.08);
+            --gap:18px;
+            --maxw:1200px;
+        }
+        html,body{height:100%;margin:0;font-family:Inter, "Segoe UI", Roboto, Arial;}
+        body{background:var(--bg);color:#111;line-height:1.4}
+        .container{max-width:var(--maxw);margin:28px auto;padding:20px;}
+        header{display:flex;align-items:flex-start;gap:20px;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;}
+        header .title{display:flex;flex-direction:column;}
+        header h1{margin:0;font-size:22px}
+        header p{margin:6px 0 0;color:var(--muted);font-size:13px}
+
+        .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+        .controls input[type=date]{padding:8px;border-radius:6px;border:1px solid #e6e9ef;background:white}
+        .btn{background:var(--accent);color:white;padding:8px 12px;border-radius:8px;border:none;cursor:pointer;font-size:13px;}
+        .btn.secondary{background:#eef2ff;color:var(--accent);border:1px solid #dbeafe}
+        .btn.ghost{background:transparent;border:1px solid #e2e8f0;color:#374151}
+
+        /* layout */
+        .top-row{display:flex;gap:var(--gap);align-items:center;margin-bottom:var(--gap)}
+        .user-list{display:flex;flex-wrap:wrap;gap:8px}
+        .user-pill{background:#e6f0ff;color:var(--accent);padding:8px 12px;border-radius:999px;border:none;cursor:pointer;font-size:13px;}
+        .cards{display:grid;grid-template-columns: 1fr 360px;gap:var(--gap);align-items:start;margin-top:12px}
+
+        .card{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px}
+        .summary-card{display:flex;flex-direction:column;gap:8px}
+        .summary-row{display:flex;justify-content:space-between;align-items:center}
+        .summary-title{font-weight:600}
+        .summary-big{font-size:20px;font-weight:700}
+        .muted{color:var(--muted);font-size:13px}
+        .tabulator-tableHolder {
+            background: white !important;
+        }
+
+        /* details area */
+        .details{display:flex;gap:var(--gap);margin-top:var(--gap)}
+        #table-wrap{flex:1}
+        #userTable{min-height:320px}
+
+        #pieChart{width:100%;height:420px}
+
+        /* small footer area below table */
+        .table-actions{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;}
+
+        /* loading overlay */
+        #loadingOverlay {
+            position: fixed; top: 0; left: 0; right:0; bottom:0;
+            background: rgba(255,255,255,0.85); display:none;
+            z-index:9999; display:flex; align-items:center; justify-content:center; flex-direction:column;
+        }
+        .loader { border:6px solid #eee;border-top:6px solid var(--accent);border-radius:50%;width:60px;height:60px;animation:spin 1s linear infinite;margin-bottom:12px}
+        @keyframes spin{ to { transform: rotate(360deg);} }
+
+        /* responsive */
+        @media (max-width:980px){
+            .cards{grid-template-columns: 1fr;}
+            #pieChart{height:320px}
+        }
+
+        /* small niceties */
+        table.tabulator{font-size:13px}
+    </style>
+</head>
+<body>
+    <div id="loadingOverlay">
+        <div class="loader"></div>
+        <div id="loadingText">Loading 0%</div>
+    </div>
+
+    <div class="container">
+        <header>
+            <div class="title">
+                <h1>Team Time Tracking Dashboard</h1>
+                <p class="muted">Redmine time logs — local proxy + Tabulator + Chart.js</p>
+            </div>
+
+            <div class="controls">
+                <label>From: <input id="fromDate" type="date"></label>
+                <label>To: <input id="toDate" type="date"></label>
+                <button class="btn" onclick="loadMainChart()">Submit</button>
+
+                <!-- New & existing reporting buttons -->
+                <select id="csvSelector" style="padding:8px;border-radius:6px;border:1px solid #d1d5db;">
+                    <option value="hoursSummary">Project Hours Summary CSV</option>
+                    <option value="availabilitySummary">Project Availability Summary CSV</option>
+                     <option value="employeeTotals">Employee Total Hours CSV</option> <!-- NEW -->
+                     <option value="activityPercent">Activity % Summary CSV</option>
+                    <option value="hoursPerDay">Project Hours CSVs (per-day)</option>
+                    <option value="availabilityPerDay">Project Availability CSVs (per-day)</option>
+                </select>
+
+                <button class="btn secondary" onclick="downloadSelectedCSV()">Download</button>
+            </div>
+        </header>
+
+        <div class="card" style="margin-bottom:20px;">
+            <canvas id="timeChart" height="120"></canvas>
+        </div>
+
+        <section class="top-row card">
+            <div style="flex:1">
+                <strong style="display:block;margin-bottom:8px">Select a User</strong>
+                <div id="userList" class="user-list"></div>
+            </div>
+
+            <div style="width:300px" class="summary-card">
+                <div style="display:flex;align-items:center;justify-content:space-between">
+                    <div>
+                        <div class="muted">Selected</div>
+                        <div id="summaryName" class="summary-big">—</div>
+                    </div>
+                    <div style="text-align:right">
+                        <div class="muted">Total Hours</div>
+                        <div id="summaryHours" style="font-weight:700;font-size:20px">0</div>
+                    </div>
+                </div>
+
+                <div style="display:flex;gap:10px;flex-wrap:wrap">
+                    <div class="card" style="padding:10px;flex:1;background:#fbfbff">
+                        <div class="muted">Projects</div>
+                        <div id="summaryProjects" style="font-weight:600">0</div>
+                    </div>
+                    <div class="card" style="padding:10px;flex:1;background:#fbfbff">
+                        <div class="muted">Entries</div>
+                        <div id="summaryEntries" style="font-weight:600">0</div>
+                    </div>
+                </div>
+
+                <div style="margin-top:8px" class="muted">Top Project: <span id="summaryTopProject">—</span></div>
+            </div>
+        </section>
+
+        <div class="cards">
+            <div class="card" id="table-wrap">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
+                    <strong>Time Logs</strong>
+                    <div class="table-actions">
+                        <button class="btn secondary" onclick="downloadCSV()">Export CSV</button>
+                        <button class="btn ghost" onclick="downloadJSON()">Export JSON</button>
+                        <button class="btn ghost" id="clearFilterBtn" onclick="clearProjectFilter()" style="display:none">Clear Project Filter</button>
+                    </div>
+                </div>
+
+                <div id="userTable"></div>
+            </div>
+
+            <div class="card">
+                <div style="display:flex;align-items:center;justify-content:space-between">
+                    <strong>Project Breakdown</strong>
+                    <div class="muted" id="pieLegendCount">—</div>
+                </div>
+
+                <canvas id="pieChart"></canvas>
+                <div style="margin-top:10px" class="muted">Tip: click a slice to filter table to that project. Click empty space to reset.</div>
+            </div>
+        </div>
+
+        <!-- === NEW SECTION: Activity Pie Charts for All Users === -->
+        <div class="card" style="margin-top:30px;">
+            <h2 style="margin-bottom:10px;">Activity Breakdown (All Users)</h2>
+            <p class="muted">Generated from the activity percentage aggregation — updated whenever you click Submit.</p>
+
+            <div id="allUserActivityCharts"
+                 style="display:flex;flex-wrap:wrap;gap:30px;justify-content:flex-start;">
+            </div>
+        </div>
+    </div>
+
+<script>
+/* ========== Configuration ========== */
+const REDMINE_URL = "http://localhost:9000"; // your proxy
+const USERS = [
+    { id: 14,  name: "Arshana" },
+    { id: 142, name: "Chathumini" },
+    { id: 141, name: "Himesh" },
+    { id: 11,  name: "Kavin" },
+    { id: 20,  name: "Navod" },
+    { id: 104, name: "Nipuni" },
+    { id: 18,  name: "Oshani" },
+    { id: 7,   name: "Pahansith" },
+    { id: 82,  name: "Rajitha" },
+    { id: 12,  name: "Sandaru" },
+    { id: 132, name: "Sanuka" },
+    { id: 103, name: "Subodhinie" },
+    { id: 140, name: "Uditha" },
+    { id: 86,  name: "Viranga" }
+];
+
+const ACTIVITY_ORDER = [
+    "Operation Support",
+    "Requirement Analysis",
+    "Design",
+    "Development",
+    "Testing",
+    "Documentation",
+    "Customer Meeting/Communication",
+    "Customer training",
+    "Managed Services",
+    "Customer Incident/Bug",
+    "Interviews",
+    "Internal Meeting",
+    "Internal training",
+    "Learning",
+    "Internal project tracking"
+];
+
+let userTable = null;
+let currentUserEntries = [];
+let pieChart = null;
+let selectedUser = null;
+
+// All entries for all users in the selected range (used for project CSVs)
+let allEntries = [];
+
+/* ===== Helpers ===== */
+function formatDate(d){ return d.toISOString().split('T')[0]; }
+function getYesterday(){ const d=new Date(); d.setDate(d.getDate()-1); return d; }
+function dateRange(start,end){
+    const arr=[]; let cur=new Date(start); const endDate=new Date(end);
+    while(cur<=endDate){ arr.push(formatDate(cur)); cur.setDate(cur.getDate()+1); }
+    return arr;
+}
+
+async function fetchEntries(userId, date){
+    const url = `${REDMINE_URL}/time_entries.json?user_id=${userId}&spent_on=${date}`;
+    const res = await fetch(url);
+    if(!res.ok) return [];
+    const data = await res.json();
+    return data.time_entries || [];
+}
+
+/* ===== Loading Overlay ===== */
+function showLoading(){ document.getElementById('loadingOverlay').style.display='flex'; }
+function hideLoading(){ document.getElementById('loadingOverlay').style.display='none'; }
+function setLoadingText(t){ document.getElementById('loadingText').innerText = t; }
+
+/* ===== Build user buttons ===== */
+function renderUserButtons(){
+    const div = document.getElementById('userList'); div.innerHTML='';
+    USERS.forEach(u=>{
+        const b = document.createElement('button');
+        b.className='user-pill';
+        b.innerText = u.name;
+        b.onclick = ()=> loadUserDetails(u.id,u.name);
+        div.appendChild(b);
+    });
+}
+
+/* ===== Tabulator setup ===== */
+function initTabulator(){
+    if(userTable) return;
+
+    userTable = new Tabulator("#userTable", {
+        maxHeight:"450px",
+        layout:"fitColumns",
+        pagination:"local",
+        paginationSize:10,
+        movableColumns:true,
+        columns:[
+            {title:"Date", field:"date", hozAlign:"left", sorter:"date"},
+            {title:"Project", field:"project", sorter:"string"},
+            {
+                title: "Issue",
+                field: "issue",
+                sorter: "number",
+                formatter: function(cell){
+                    const issueId = cell.getValue();
+                    if (!issueId) return "";
+                    const url = `https://roadmap.entgra.net/issues/${issueId}`;
+                    return `<a href="${url}" target="_blank" style="color:#2563eb;text-decoration:none;">${issueId}</a>`;
+                },
+                formatterPrint: false,
+            },
+            {title:"Activity", field:"activity", sorter:"string"},
+            {title:"Comments", field:"comments", sorter:"string", formatter:"plaintext"},
+            {
+              title:"Hours",
+              field:"hours",
+              sorter:"number",
+              sorterParams:{ alignEmptyValues:"bottom" },
+              bottomCalc:function(values){
+                  const sum = values.reduce((a,b)=> a + b, 0);
+                  return sum.toFixed(2);
+              },
+              bottomCalcFormatter:"plaintext"
+            },
+        ],
+        initialSort:[ {column:"date", dir:"desc"} ]
+    });
+}
+
+/* ===== Exports (current table) ===== */
+function downloadCSV(){ userTable.download("csv", `timelogs_${selectedUser || 'team'}.csv`); }
+function downloadJSON(){ userTable.download("json", `timelogs_${selectedUser || 'team'}.json`); }
+
+/* ===== Core: load chart for entire team (bar) ===== */
+let teamBarChart = null;
+async function loadMainChart(){
+    const from = document.getElementById('fromDate').value;
+    const to = document.getElementById('toDate').value;
+    if(!from||!to){ alert('Please select date range'); return; }
+
+    renderUserButtons();
+    showLoading();
+    const dates = dateRange(from,to);
+    const totals = [];
+    const totalTasks = USERS.length * dates.length;
+    let completed = 0;
+
+    allEntries = []; // reset global cache
+
+    for(const user of USERS){
+        let uHours=0;
+        for(const d of dates){
+            const entries = await fetchEntries(user.id,d);
+            for(const e of entries){
+                const hours = e.hours || 0;
+                uHours += hours;
+
+                allEntries.push({
+                    userId: user.id,
+                    userName: user.name,
+                    date: e.spent_on,
+                    project: e.project?.name || 'Unknown',
+                    issue: e.issue?.id || '',
+                    activity: e.activity?.name || '',
+                    comments: e.comments || '',
+                    hours: hours
+                });
+            }
+            completed++; setLoadingText(`Loading ${Math.floor((completed/totalTasks)*100)}%`);
+        }
+        totals.push(uHours);
+    }
+
+    drawTeamBar(totals);
+    hideLoading();
+
+    // NEW: generate all user activity pie charts
+    renderAllUserActivityCharts();
+}
+
+/* ===== Draw team bar chart ===== */
+function drawTeamBar(data){
+    const ctx = document.getElementById('timeChart').getContext('2d');
+    if(teamBarChart) teamBarChart.destroy();
+    teamBarChart = new Chart(ctx, {
+        type:'bar',
+        data:{ labels:USERS.map(u=>u.name), datasets:[{label:'Hours', data:data, backgroundColor:USERS.map(()=> 'rgba(37,99,235,0.8)')}]},
+        options:{scales:{ y:{ beginAtZero:true }}, plugins:{legend:{display:false}}}
+    });
+}
+
+/* ===== Load user details (table + pie + summary) ===== */
+async function loadUserDetails(userId,userName){
+    selectedUser = userName;
+    document.getElementById('clearFilterBtn').style.display='none';
+
+    const from = document.getElementById('fromDate').value;
+    const to = document.getElementById('toDate').value;
+    if(!from||!to){ alert('Pick date range'); return; }
+
+    showLoading();
+    const dates = dateRange(from,to);
+    const entriesAgg = [];
+    const projTotals = {};
+    const totalTasks = dates.length;
+    let completed=0;
+
+    for(const d of dates){
+        const entries = await fetchEntries(userId,d);
+        for(const e of entries){
+            const row = {
+                date: e.spent_on,
+                project: e.project?.name || 'Unknown',
+                issue: e.issue?.id || '',
+                activity: e.activity?.name || '',
+                comments: e.comments || '',
+                hours: e.hours || 0
+            };
+            entriesAgg.push(row);
+            projTotals[row.project] = (projTotals[row.project] || 0) + row.hours;
+        }
+        completed++; setLoadingText(`Loading ${Math.floor((completed/totalTasks)*100)}%`);
+    }
+
+    currentUserEntries = entriesAgg;
+    initTabulator();
+    userTable.setData(entriesAgg);
+
+    updateSummary(userName, projTotals, entriesAgg);
+    drawPie(projectsToChartData(projTotals), userName);
+
+    hideLoading();
+}
+
+/* ===== Summary card update ===== */
+function updateSummary(userName, projTotals, entriesAgg){
+    const totalHours = entriesAgg.reduce((s,e)=> s + (e.hours||0), 0);
+    const projectsCount = Object.keys(projTotals).length;
+    const entriesCount = entriesAgg.length;
+
+    let topProject = '—';
+    if(projectsCount>0){
+        topProject = Object.entries(projTotals).sort((a,b)=> b[1]-a[1])[0][0];
+    }
+
+    document.getElementById('summaryName').innerText = userName;
+    document.getElementById('summaryHours').innerText = totalHours.toFixed(2);
+    document.getElementById('summaryProjects').innerText = projectsCount;
+    document.getElementById('summaryEntries').innerText = entriesCount;
+    document.getElementById('summaryTopProject').innerText = topProject;
+}
+
+/* ===== Pie helpers ===== */
+function projectsToChartData(projTotals){
+    return {
+        labels: Object.keys(projTotals),
+        values: Object.values(projTotals)
+    };
+}
+
+function downloadSelectedCSV() {
+    const choice = document.getElementById("csvSelector").value;
+
+    switch (choice) {
+        case "hoursPerDay":
+            generateProjectHoursCSVs();
+            break;
+
+        case "availabilityPerDay":
+            generateProjectAvailabilityCSVs();
+            break;
+
+        case "hoursSummary":
+            generateProjectHoursTotalCSV();
+            break;
+
+        case "availabilitySummary":
+            generateProjectAvailabilityTotalCSV();
+            break;
+
+        case "employeeTotals":
+            generateEmployeeTotalHoursCSV(); // NEW
+            break;
+
+        case "activityPercent":
+            generateActivityPercentageCSV();
+            break;
+    }
+}
+
+
+
+function generateActivityPercentageCSV() {
+    if (!ensureDataLoaded()) return;
+
+    // Hard-coded activity list
+    const activities = ACTIVITY_ORDER;
+
+    // Build structure: user -> activity -> hours
+    const userActivity = new Map();
+    const userTotals = new Map();
+
+    for (const e of allEntries) {
+        const user = e.userName;
+        const act = (e.activity || "").trim();
+        const hrs = e.hours || 0;
+
+        if (!userActivity.has(user)) userActivity.set(user, {});
+        if (!userTotals.has(user)) userTotals.set(user, 0);
+
+        userTotals.set(user, userTotals.get(user) + hrs);
+
+        if (!userActivity.get(user)[act]) userActivity.get(user)[act] = 0;
+        userActivity.get(user)[act] += hrs;
+    }
+
+    // CSV HEADER
+    let csv = "Name";
+    activities.forEach(a => csv += `,${a} %`);
+    csv += "\n";
+
+    // Each user row
+    USERS.forEach(u => {
+        const name = u.name;
+        const total = userTotals.get(name) || 0;
+        const activityHours = userActivity.get(name) || {};
+
+        let row = [name];
+
+        activities.forEach(a => {
+            let hrs = activityHours[a] || 0;
+
+            // convert fraction → percentage
+            let pct = total > 0 ? (hrs / total) * 100 : 0;
+
+            row.push(numberToCsv(pct));
+        });
+
+        csv += row.join(",") + "\n";
+    });
+
+    downloadCsvString("activity_percentages.csv", csv);
+}
+
+
+function generateEmployeeTotalHoursCSV() {
+    if (!ensureDataLoaded()) return;
+
+    const userNames = USERS.map(u => u.name);
+
+    // Prepare accumulators
+    const projectHours = new Map();
+    const personalHours = new Map();
+
+    userNames.forEach(u => {
+        projectHours.set(u, 0);
+        personalHours.set(u, 0);
+    });
+
+    // We reuse allEntries (no API call)
+    for (const e of allEntries) {
+        const projectName = (e.project || "").trim();
+        const user = e.userName;
+        const hours = e.hours || 0;
+
+        if (!projectHours.has(user)) continue;
+
+        // Personal project? → user's name matches project
+        if (projectName === user) {
+            personalHours.set(user, personalHours.get(user) + hours);
+        } else {
+            projectHours.set(user, projectHours.get(user) + hours);
+        }
+    }
+
+    // Build CSV
+    let csv = "Name,Project Hours,Personal Hours\n";
+
+    userNames.forEach(u => {
+        const ph = projectHours.get(u) || 0;
+        const per = personalHours.get(u) || 0;
+        csv += `${u},${numberToCsv(ph)},${numberToCsv(per)}\n`;
+    });
+
+    downloadCsvString("employee_total_hours.csv", csv);
+}
+
+
+
+function drawPie(dataObj, userName){
+    const ctx = document.getElementById('pieChart').getContext('2d');
+    if(pieChart) pieChart.destroy();
+
+    pieChart = new Chart(ctx, {
+        type:'pie',
+        data:{ labels: dataObj.labels, datasets:[{ data: dataObj.values, backgroundColor: generateColors(dataObj.labels.length)}]},
+        options:{
+            plugins:{ title:{display:true,text:`Project-wise Hours for ${userName}`} },
+            onClick: (evt, elems) => {
+                if(!elems.length){
+                    clearProjectFilter();
+                    return;
+                }
+                const idx = elems[0].index;
+                const projectName = pieChart.data.labels[idx];
+                applyProjectFilter(projectName);
+            }
+        }
+    });
+
+    document.getElementById('pieLegendCount').innerText = `${dataObj.labels.length} projects`;
+}
+
+/* ===== Table <-> Pie interaction (no API calls) ===== */
+function applyProjectFilter(projectName){
+    if(!userTable) return;
+    userTable.setFilter("project", "=", projectName);
+    document.getElementById('clearFilterBtn').style.display='inline-block';
+}
+
+function clearProjectFilter(){
+    if(!userTable) return;
+    userTable.clearFilter();
+    document.getElementById('clearFilterBtn').style.display='none';
+}
+
+/* ===== Utilities ===== */
+function generateColors(n){
+    const palette=["#3b82f6","#fb7185","#f97316","#fde68a","#34d399","#60a5fa","#a78bfa","#f472b6","#fb923c","#94a3b8"];
+    const out=[];
+    for(let i=0;i<n;i++) out.push(palette[i % palette.length]);
+    return out;
+}
+
+function sanitizeFilename(name){
+    return name.replace(/[^a-z0-9]+/gi,"_");
+}
+
+function downloadCsvString(filename, csvContent){
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+}
+
+function numberToCsv(n){
+    if (typeof n !== "number") return "0";
+    return (Math.abs(n % 1) < 1e-9) ? n.toString() : n.toFixed(2);
+}
+
+function ensureDataLoaded(){
+    if(allEntries.length === 0){
+        alert("Please load data first using the Submit button.");
+        return false;
+    }
+    return true;
+}
+
+/* ===== Build project aggregates (hours + availability) from allEntries ===== */
+function buildProjectAggregates() {
+
+    const perUserDay = new Map();
+
+    // -------------------------------
+    // Group logs by user + date
+    // -------------------------------
+    for (const e of allEntries) {
+        const key = `${e.userName}||${e.date}`;
+        let rec = perUserDay.get(key);
+
+        if (!rec) {
+            rec = {
+                userName: e.userName,
+                date: e.date,
+                personalHours: 0,
+                projectHours: {}
+            };
+            perUserDay.set(key, rec);
+        }
+
+        const projectName = (e.project || "Unknown").trim();
+
+        if (projectName === e.userName) {
+            rec.personalHours += e.hours || 0;
+        } else {
+            rec.projectHours[projectName] =
+                (rec.projectHours[projectName] || 0) + (e.hours || 0);
+        }
+    }
+
+    const projects = new Map();
+    const personalOnlyTotalsHours = new Map();
+    const personalOnlyTotalsAvailability = new Map();
+    const personalMixedAvailability = new Map();
+
+    // Track weekday availability presence per project+user
+    const projectUserHasWeekday = new Map(); // key: project||user → boolean
+
+    // -------------------------------
+    // Process each user-day
+    // -------------------------------
+    perUserDay.forEach(rec => {
+
+        const user = rec.userName;
+        const personal = rec.personalHours;
+        const nonPersonalProjects = Object.keys(rec.projectHours);
+        const weekend = isWeekend(rec.date);
+
+        const hasPersonal = personal > 0;
+        const hasNonPersonal = nonPersonalProjects.length > 0;
+
+        // -----------------------------------
+        // PERSONAL ONLY
+        // -----------------------------------
+        if (hasPersonal && !hasNonPersonal) {
+
+            personalOnlyTotalsHours.set(
+                user,
+                (personalOnlyTotalsHours.get(user) || 0) + personal
+            );
+
+            if (!weekend) {
+                personalOnlyTotalsAvailability.set(
+                    user,
+                    (personalOnlyTotalsAvailability.get(user) || 0) + 1
+                );
+            }
+            return;
+        }
+
+        // -----------------------------------
+        // NON-PERSONAL ONLY
+        // -----------------------------------
+        if (!hasPersonal && hasNonPersonal) {
+
+            const nonPersonalTotal = nonPersonalProjects.reduce(
+                (s, p) => s + rec.projectHours[p], 0
+            );
+
+            nonPersonalProjects.forEach(p => {
+
+                const key = `${p}||${user}`;
+
+                if (!projects.has(p)) {
+                    projects.set(p, { name: p, dates: new Set(), users: new Map() });
+                }
+
+                const proj = projects.get(p);
+                proj.dates.add(rec.date);
+
+                if (!proj.users.has(user)) {
+                    proj.users.set(user, { hours: {}, availability: {} });
+                }
+
+                const u = proj.users.get(user);
+
+                // hours always count
+                u.hours[rec.date] =
+                    (u.hours[rec.date] || 0) + rec.projectHours[p];
+
+                if (!weekend) {
+                    u.availability[rec.date] =
+                        rec.projectHours[p] / nonPersonalTotal;
+                    projectUserHasWeekday.set(key, true);
+                } else if (!projectUserHasWeekday.has(key)) {
+                    projectUserHasWeekday.set(key, false);
+                }
+            });
+            return;
+        }
+
+        // -----------------------------------
+        // MIXED DAY
+        // -----------------------------------
+        if (hasPersonal && hasNonPersonal) {
+
+            const nonPersonalTotal = nonPersonalProjects.reduce(
+                (s, p) => s + rec.projectHours[p], 0
+            );
+            const totalHours = personal + nonPersonalTotal;
+
+            nonPersonalProjects.forEach(p => {
+
+                const key = `${p}||${user}`;
+
+                if (!projects.has(p)) {
+                    projects.set(p, { name: p, dates: new Set(), users: new Map() });
+                }
+
+                const proj = projects.get(p);
+                proj.dates.add(rec.date);
+
+                if (!proj.users.has(user)) {
+                    proj.users.set(user, { hours: {}, availability: {} });
+                }
+
+                const u = proj.users.get(user);
+
+                u.hours[rec.date] =
+                    (u.hours[rec.date] || 0) + rec.projectHours[p];
+
+                if (!weekend) {
+                    u.availability[rec.date] =
+                        rec.projectHours[p] / totalHours;
+                    projectUserHasWeekday.set(key, true);
+                } else if (!projectUserHasWeekday.has(key)) {
+                    projectUserHasWeekday.set(key, false);
+                }
+            });
+
+            personalOnlyTotalsHours.set(
+                user,
+                (personalOnlyTotalsHours.get(user) || 0) + personal
+            );
+
+            if (!weekend) {
+                personalMixedAvailability.set(
+                    user,
+                    (personalMixedAvailability.get(user) || 0) + (personal / totalHours)
+                );
+            }
+        }
+    });
+
+    // -----------------------------------
+    // WEEKEND-ONLY PROJECT AVAILABILITY FIX
+    // -----------------------------------
+    projects.forEach((proj, projectName) => {
+        proj.users.forEach((userData, user) => {
+            const key = `${projectName}||${user}`;
+            if (projectUserHasWeekday.get(key) === false) {
+                // weekend-only contribution → availability = 1
+                userData.availability["WEEKEND_ONLY"] = 1;
+            }
+        });
+    });
+
+    return {
+        projects,
+        personalOnlyTotalsHours,
+        personalOnlyTotalsAvailability,
+        personalMixedAvailability
+    };
+}
+
+
+
+function isWeekend(dateStr) {
+    // dateStr format: YYYY-MM-DD
+    const d = new Date(dateStr + "T00:00:00");
+    const day = d.getDay(); // 0 = Sun, 6 = Sat
+    return day === 0 || day === 6;
+}
+
+
+
+function buildActivityPercentages() {
+    const userTotals = new Map();
+
+    // Initialize map
+    USERS.forEach(u => {
+        userTotals.set(u.name, {
+            total: 0,
+            activity: {}
+        });
+        ACTIVITY_ORDER.forEach(a => userTotals.get(u.name).activity[a] = 0);
+    });
+
+    // Aggregate all raw entries
+    for (const e of allEntries) {
+        const user = e.userName;
+        const activity = (e.activity || "").trim();
+        const hours = e.hours || 0;
+
+        const r = userTotals.get(user);
+        r.total += hours;
+
+        if (ACTIVITY_ORDER.includes(activity)) {
+            r.activity[activity] += hours;
+        }
+    }
+
+    // Calculate % for each activity
+    const percentageData = {};
+
+    USERS.forEach(u => {
+        const user = u.name;
+        const r = userTotals.get(user);
+        const total = r.total;
+
+        percentageData[user] = {};
+
+        ACTIVITY_ORDER.forEach(a => {
+            if (total === 0) percentageData[user][a] = 0;
+            else percentageData[user][a] = r.activity[a] / total;
+        });
+    });
+
+    return percentageData;
+}
+
+Chart.register({
+    id: "customLegendHtml",
+    afterUpdate(chart) {
+        chart.generateLegend = function () {
+            const labels = this.data.labels;
+            const colors = this.data.datasets[0].backgroundColor;
+
+            let html = "";
+            labels.forEach((l, i) => {
+                html += `
+                    <div style="display:flex;align-items:center;gap:6px;margin:2px 0;">
+                        <div style="width:12px;height:12px;background:${colors[i]};
+                                    border-radius:3px;"></div>
+                        <span>${l}</span>
+                    </div>`;
+            });
+            return html;
+        };
+    }
+});
+
+function generateFilteredLegend(labels, values, colors) {
+    let html = "";
+
+    for (let i = 0; i < labels.length; i++) {
+        if (values[i] === 0) continue; // skip empty activity
+
+        html += `
+            <div style="display:flex;align-items:center;margin-bottom:4px;">
+                <span style="
+                    display:inline-block;
+                    width:12px;
+                    height:12px;
+                    border-radius:3px;
+                    margin-right:6px;
+                    background:${colors[i]};
+                "></span>
+                <span>${labels[i]}</span>
+            </div>
+        `;
+    }
+
+    return html;
+}
+
+
+function renderAllUserActivityCharts() {
+    const container = document.getElementById("allUserActivityCharts");
+    container.innerHTML = ""; // clear old charts
+
+    const percentages = buildActivityPercentages();
+
+    USERS.forEach(u => {
+        const user = u.name;
+
+        // Extract only non-zero activities
+        const labels = [];
+        const values = [];
+
+        ACTIVITY_ORDER.forEach(a => {
+            let pct = percentages[user][a] * 100; // convert to percentage
+            if (pct > 0) {
+                labels.push(a);
+                values.push(pct);
+            }
+        });
+
+        // If no activity → skip chart
+        if (labels.length === 0) return;
+
+        // Chart wrapper UI
+        const wrapper = document.createElement("div");
+        wrapper.style.width = "260px";
+        wrapper.style.padding = "16px";
+        wrapper.style.border = "1px solid #e5e7eb";
+        wrapper.style.borderRadius = "12px";
+        wrapper.style.background = "#fff";
+        wrapper.style.boxShadow = "0 2px 6px rgba(0,0,0,0.05)";
+        wrapper.innerHTML = `
+            <h4 style="margin:4px 0 10px; text-align:center">${user}</h4>
+            <canvas id="activityPie_${user}" width="240" height="240"></canvas>
+        `;
+
+        container.appendChild(wrapper);
+
+        const ctx = document.getElementById(`activityPie_${user}`).getContext("2d");
+
+        new Chart(ctx, {
+            type: 'pie',
+            plugins: [ChartDataLabels],
+            data: {
+                labels: labels,
+                datasets: [{
+                    data: values,
+                    backgroundColor: generateColors(labels.length)
+                }]
+            },
+            options: {
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'bottom',
+                        labels: {
+                            boxWidth: 12,
+                            font: { size: 11 }
+                        }
+                    },
+                    // Show percentage labels on slices
+                    datalabels: {
+                        color: "#ffffff",
+                        formatter: (value) => value.toFixed(1) + "%",
+                        font: {
+                            weight: "bold",
+                            size: 12
+                        }
+                    }
+                }
+            }
+        });
+    });
+}
+
+
+
+/* ===== Generate project hours CSVs (per project, per-day) ===== */
+function generateProjectHoursCSVs(){
+    if (!ensureDataLoaded()) return;
+
+    const { projects } = buildProjectAggregates();
+    const userNames = USERS.map(u => u.name);
+
+    projects.forEach((proj, projectName) => {
+        const dates = Array.from(proj.dates).sort();
+        let csv = "Date," + userNames.join(",") + "\n";
+
+        dates.forEach(date => {
+            const row = [date];
+            userNames.forEach(userName => {
+                const userData = proj.users.get(userName);
+                const val = userData && userData.hours[date] ? userData.hours[date] : 0;
+                row.push(numberToCsv(val));
+            });
+            csv += row.join(",") + "\n";
+        });
+
+        const filename = `project_hours_${sanitizeFilename(projectName)}.csv`;
+        downloadCsvString(filename, csv);
+    });
+}
+
+/* ===== Generate project availability CSVs (per project, per-day) ===== */
+function generateProjectAvailabilityCSVs(){
+    if (!ensureDataLoaded()) return;
+
+    const { projects } = buildProjectAggregates();
+    const userNames = USERS.map(u => u.name);
+
+    projects.forEach((proj, projectName) => {
+        const dates = Array.from(proj.dates).sort();
+        let csv = "Date," + userNames.join(",") + "\n";
+
+        dates.forEach(date => {
+            const row = [date];
+            userNames.forEach(userName => {
+                const userData = proj.users.get(userName);
+                const val = userData && userData.availability[date] ? userData.availability[date] : 0;
+                row.push(numberToCsv(val));
+            });
+            csv += row.join(",") + "\n";
+        });
+
+        const filename = `project_availability_${sanitizeFilename(projectName)}.csv`;
+        downloadCsvString(filename, csv);
+    });
+}
+
+
+/* ===== NEW: Generate project hours TOTALS CSV (all projects in one file) ===== */
+function generateProjectHoursTotalCSV() {
+    if (!ensureDataLoaded()) return;
+
+    const {
+        projects,
+        personalOnlyTotalsHours
+    } = buildProjectAggregates();
+
+    const userNames = USERS.map(u => u.name);
+    let csv = "Project," + userNames.join(",") + "\n";
+
+    projects.forEach((proj, projectName) => {
+        const row = [projectName];
+        let hasData = false;
+
+        userNames.forEach(user => {
+            const u = proj.users.get(user);
+            let total = 0;
+            if (u) {
+                for (const d in u.hours) total += u.hours[d];
+            }
+            if (total > 0) hasData = true;
+            row.push(numberToCsv(total));
+        });
+
+        if (hasData) csv += row.join(",") + "\n";
+    });
+
+    // PERSONAL_ONLY_HOURS
+    let personalRow = ["PERSONAL_ONLY_HOURS"];
+    let hasPersonal = false;
+
+    userNames.forEach(u => {
+        const val = personalOnlyTotalsHours.get(u) || 0;
+        if (val > 0) hasPersonal = true;
+        personalRow.push(numberToCsv(val));
+    });
+
+    if (hasPersonal) csv += personalRow.join(",") + "\n";
+
+    // ✅ NEW: PERSONAL_MIXED_HOURS (placeholder)
+    let mixedRow = ["PERSONAL_MIXED_HOURS"];
+    userNames.forEach(() => mixedRow.push("0"));
+    csv += mixedRow.join(",") + "\n";
+
+    downloadCsvString("project_hours_totals.csv", csv);
+}
+
+
+
+
+
+
+/* ===== NEW: Generate project availability TOTALS CSV (all projects in one file) ===== */
+function generateProjectAvailabilityTotalCSV() {
+    if (!ensureDataLoaded()) return;
+
+    const {
+        projects,
+        personalOnlyTotalsAvailability,
+        personalMixedAvailability
+    } = buildProjectAggregates();
+
+    const userNames = USERS.map(u => u.name);
+
+    let csv = "Project," + userNames.join(",") + "\n";
+
+    // ---------------------------------------
+    // Write NON-PERSONAL PROJECT AVAILABILITY
+    // ---------------------------------------
+    projects.forEach((proj, projectName) => {
+        const row = [projectName];
+        let projectHasData = false;
+
+        userNames.forEach(userName => {
+            const userData = proj.users.get(userName);
+            let total = 0;
+
+            if (userData) {
+                for (const d in userData.availability)
+                    total += userData.availability[d];
+            }
+
+            if (total > 0) projectHasData = true;
+            row.push(numberToCsv(total));
+        });
+
+        if (projectHasData) csv += row.join(",") + "\n";
+    });
+
+    // ---------------------------------------------------------
+    // PERSONAL_ONLY_AVAILABILITY  (unchanged – personal-only days)
+    // ---------------------------------------------------------
+    let personalOnlyRow = ["PERSONAL_ONLY_AVAILABILITY"];
+    let hasPersonalOnly = false;
+
+    userNames.forEach(u => {
+        const val = personalOnlyTotalsAvailability.get(u) || 0;
+        if (val > 0) hasPersonalOnly = true;
+        personalOnlyRow.push(numberToCsv(val));
+    });
+
+    if (hasPersonalOnly) csv += personalOnlyRow.join(",") + "\n";
+
+    // ---------------------------------------------------------
+    // NEW: PERSONAL_MIXED_AVAILABILITY (fractional on mixed days)
+    // ---------------------------------------------------------
+    let personalMixedRow = ["PERSONAL_MIXED_AVAILABILITY"];
+    let hasMixedData = false;
+
+    userNames.forEach(u => {
+        const val = personalMixedAvailability.get(u) || 0;
+        if (val > 0) hasMixedData = true;
+        personalMixedRow.push(numberToCsv(val));
+    });
+
+    if (hasMixedData) csv += personalMixedRow.join(",") + "\n";
+
+    // ---------------------------------------
+    // Download file
+    // ---------------------------------------
+    downloadCsvString("project_availability_totals.csv", csv);
+}
+
+
+
+
+
+/* ===== Init defaults ===== */
+window.onload = ()=>{
+    const y = formatDate( getYesterday() );
+    document.getElementById('fromDate').value = y;
+    document.getElementById('toDate').value = y;
+
+    renderUserButtons();
+    initTabulator();
+
+    // initial load (team)
+    loadMainChart();
+};
+</script>
+</body>
+</html>

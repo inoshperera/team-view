@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Redmine User Selector</title>
+
+<style>
+body {
+    font-family: Arial, sans-serif;
+    background:#f4f6fb;
+    padding:30px;
+}
+
+h2 { margin-bottom:5px; }
+
+table {
+    border-collapse: collapse;
+    background:white;
+    width:650px;
+    box-shadow:0 4px 12px rgba(0,0,0,.08);
+}
+
+th, td {
+    padding:10px;
+    border-bottom:1px solid #e5e7eb;
+    text-align:left;
+}
+
+th {
+    background:#f1f5f9;
+}
+
+button {
+    margin-top:15px;
+    padding:10px 16px;
+    background:#2563eb;
+    color:white;
+    border:none;
+    border-radius:6px;
+    cursor:pointer;
+}
+
+button:hover { background:#1d4ed8; }
+
+pre {
+    margin-top:20px;
+    background:#111827;
+    color:#e5e7eb;
+    padding:15px;
+    border-radius:8px;
+    max-width:650px;
+    overflow:auto;
+}
+</style>
+</head>
+
+<body>
+
+<h2>Redmine User Selector</h2>
+<p>Loaded from Redmine API</p>
+
+<table>
+<thead>
+<tr>
+    <th>Select</th>
+    <th>ID</th>
+    <th>Name</th>
+    <th>Login</th>
+</tr>
+</thead>
+<tbody id="userTable"></tbody>
+</table>
+
+<button onclick="downloadUsers()">Download USERS JS</button>
+
+<pre id="preview"></pre>
+
+<script>
+const REDMINE_URL = "http://localhost:9000"; // same proxy you already use
+const LIMIT = 100;
+
+let allUsers = [];
+
+async function fetchAllUsers() {
+    let offset = 0;
+    let finished = false;
+
+    while (!finished) {
+        const url = `${REDMINE_URL}/users.json?limit=${LIMIT}&offset=${offset}`;
+        const res = await fetch(url);
+        const data = await res.json();
+
+        allUsers = allUsers.concat(data.users || []);
+
+        offset += LIMIT;
+        if (offset >= data.total_count) {
+            finished = true;
+        }
+    }
+
+    renderUsers();
+}
+
+function renderUsers() {
+    const tbody = document.getElementById("userTable");
+    tbody.innerHTML = "";
+
+    allUsers.forEach((u, i) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+            <td><input type="checkbox" data-index="${i}"></td>
+            <td>${u.id}</td>
+            <td>${u.firstname} ${u.lastname}</td>
+            <td>${u.login}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+function downloadUsers() {
+    const selected = [];
+
+    document.querySelectorAll("input[type=checkbox]").forEach(cb => {
+        if (cb.checked) {
+            const u = allUsers[cb.dataset.index];
+            selected.push({
+                id: u.id,
+                name: `${u.firstname} ${u.lastname}`
+            });
+        }
+    });
+
+    const js = "const USERS = " + JSON.stringify(selected, null, 4) + ";";
+
+    document.getElementById("preview").textContent = js;
+
+    const blob = new Blob([js], { type: "application/javascript" });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "users.js";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+
+    URL.revokeObjectURL(url);
+}
+
+// auto load
+fetchAllUsers();
+</script>
+
+</body>
+</html>
