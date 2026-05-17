@@ -1991,6 +1991,20 @@ function renderPlanner() {
             openPlannerEditor(task);
         });
     });
+    els.plannerBoard.querySelectorAll("[data-planner-delete]").forEach((button) => {
+        button.addEventListener("click", async () => {
+            const taskId = button.dataset.plannerDelete;
+            const task = state.planner.tasks.find((item) => String(item.id) === taskId);
+            if (!task) return;
+            if (!confirm(`Delete "${task.title}"?`)) return;
+            try {
+                await apiJson(`/api/tasks/${taskId}`, { method: "DELETE" });
+                await refreshPlanner();
+            } catch (error) {
+                alert(error.message || "Failed to delete task.");
+            }
+        });
+    });
 }
 
 function nonePrioritySortedTasks(tasks) {
@@ -2016,30 +2030,41 @@ function renderPlannerTaskCard(task) {
     const status = lookup(state.planner.statuses, task.statusId);
     const team = lookup(state.planner.teams, task.teamId);
     const due = dueLabel(task.dueDate);
+    const linkedChip = task.redmineLinked
+        ? `<span class="planner-chip chip-synced" title="${escapeHtml(task.issueKey || "")}">
+               <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+           </span>`
+        : "";
     return `
         <article class="planner-task-card ${escapeHtml(priority?.colorClass || "")}">
             <div class="planner-task-head">
                 <div class="planner-chip-row">
                     <span class="planner-chip ${escapeHtml(category?.colorClass || "")}">${escapeHtml(category?.label || task.categoryId)}</span>
                     ${team ? `<span class="planner-chip chip-team">${escapeHtml(team.name)}</span>` : ""}
-                    ${task.redmineLinked ? `<span class="planner-chip chip-synced">Linked</span>` : ""}
+                    ${linkedChip}
+                    <span class="status-pill">${escapeHtml(status?.label || task.statusId)}</span>
                 </div>
-                <span class="status-badge status-active">${escapeHtml(status?.label || task.statusId)}</span>
+                <div class="card-actions">
+                    <button class="card-action-btn" type="button" data-planner-edit="${task.id}" aria-label="Edit task" title="Edit">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    </button>
+                    <button class="card-action-btn card-action-delete" type="button" data-planner-delete="${task.id}" aria-label="Delete task" title="Delete">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                    </button>
+                </div>
             </div>
             <h2>${escapeHtml(task.title)}</h2>
-            <p>${escapeHtml(task.description || "")}</p>
+            ${task.description ? `<p class="card-desc">${escapeHtml(task.description)}</p>` : ""}
             <div class="planner-card-grid">
                 <div><span>Project</span><strong>${escapeHtml(task.projectName || "Project")}</strong></div>
-                <div><span>Priority</span><strong>${escapeHtml(priority?.label || task.priorityId)}</strong></div>
+                <div><span>Priority</span><strong class="priority-val">${escapeHtml(priority?.label || task.priorityId)}</strong></div>
                 <div><span>Due</span><strong class="${due.className}">${escapeHtml(task.dueDate || "Not set")}</strong><small>${escapeHtml(due.label)}</small></div>
-                <div><span>Linked issue</span><strong>${task.issueKey ? escapeHtml(task.issueKey) : "Not linked"}</strong></div>
-                <div><span>Progress</span><strong>${task.progress || 0}%</strong><small class="planner-progress"><i style="width:${task.progress || 0}%"></i></small></div>
+                <div><span>Linked issue</span><strong class="issue-key-val">${task.issueKey ? `<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> ${escapeHtml(task.issueKey)}` : "Not linked"}</strong></div>
             </div>
             <div class="planner-members">
-                <span>Members (${task.members?.length || 0})</span>
+                <span>MEMBERS (${task.members?.length || 0})</span>
                 <div>${(task.members || []).map((member) => `<span class="member-pill"><span class="mini-avatar ${escapeHtml(member.avatarColor || "")}">${escapeHtml(member.initials || initialsFromName(member.name))}</span>${escapeHtml(member.name)}</span>`).join("") || `<span class="no-members">No members assigned</span>`}</div>
             </div>
-            <button class="secondary-button planner-edit-button" type="button" data-planner-edit="${task.id}">Edit</button>
         </article>
     `;
 }
@@ -2421,7 +2446,7 @@ async function openPlannerEditor(task) {
     state.planner.linkedTicket = task?.redmineLinked ? task : null;
     els.plannerTaskEyebrow.textContent = task ? `Edit task · ${task.teamId}` : "New task";
     els.plannerTaskTitle.textContent = task ? "Edit high-level task" : "Add high-level task";
-    els.savePlannerTaskButton.textContent = task ? "Save changes" : "Create task";
+    els.savePlannerTaskButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>${task ? " Save changes" : " Create task"}`;
     els.deletePlannerTaskButton.classList.toggle("is-hidden", !task);
     fillPlannerEditorOptions(task);
     els.plannerTaskTitleInput.value = task?.title || "";
@@ -2451,6 +2476,8 @@ function closePlannerEditor() {
 function fillPlannerEditorOptions(task) {
     const canPickTeam = ["manager", "admin"].includes(state.auth.user?.role);
     els.plannerTaskTeam.disabled = !canPickTeam;
+    const teamWrap = document.getElementById("teamFieldWrap");
+    if (teamWrap) teamWrap.classList.toggle("is-hidden", !canPickTeam);
     els.plannerTaskTeam.innerHTML = state.planner.teams.map((team) => `<option value="${escapeHtml(team.id)}">${escapeHtml(team.name)}</option>`).join("");
     els.plannerProjectOptions.innerHTML = state.planner.projects.map((project) => `<option value="${escapeHtml(project.name)}">${escapeHtml(project.redmineIdentifier || project.source || "")}</option>`).join("");
     renderPlannerChoiceGroup("category");
@@ -2535,17 +2562,53 @@ function renderPlannerMemberPicker(selectedIds = []) {
 
 function renderPlannerSyncedPanel() {
     const ticket = state.planner.linkedTicket;
-    els.plannerSyncedPanel.classList.toggle("is-hidden", !ticket);
-    if (!ticket) {
-        return;
-    }
+    const synced = !!ticket;
+
+    els.plannerSyncedPanel.classList.toggle("is-hidden", !synced);
+    document.querySelectorAll(".synced-hideable").forEach((el) => el.classList.toggle("is-hidden", synced));
+    const membersBadge = document.getElementById("membersSyncedBadge");
+    if (membersBadge) membersBadge.classList.toggle("is-hidden", !synced);
+
+    if (!synced) return;
+
+    const statusLabel = (state.planner.statuses.find((s) => s.id === (ticket.statusId || "working"))?.label) || ticket.statusId || "—";
+    const startVal = ticket.startDate || "Not set";
+    const dueVal = ticket.dueDate || "Not set";
+    const progressVal = ticket.progress ?? els.plannerTaskProgress.value ?? 0;
+
+    const syncedIcon = `<svg class="synced-icon" xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> Synced from Redmine`;
+
     els.plannerSyncedPanel.innerHTML = `
-        <div class="synced-head">
+        <div class="synced-panel-head">
             <div>
-                <strong>Synced fields</strong>
-                <p>Status, progress, dates and assignees are kept in sync with ${escapeHtml(ticket.issueKey || ticket.redmineIssueId)}.</p>
+                <strong class="synced-panel-title">SYNCED FIELDS</strong>
+                <p class="synced-panel-desc">Status, progress, dates and assignees are kept in sync with <strong>${escapeHtml(ticket.issueKey || String(ticket.redmineIssueId))}</strong> and its sub-tickets by the backend. Update them in Redmine to change them here.</p>
             </div>
-            <button type="button" class="secondary-button" id="unlinkPlannerTicketButton">Unlink</button>
+            <button type="button" class="synced-unlink-btn" id="unlinkPlannerTicketButton">
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                Unlink
+            </button>
+        </div>
+        <div class="synced-fields-grid">
+            <div class="synced-field-box">
+                <div class="synced-field-label"><span>Status</span><span class="synced-badge">${syncedIcon}</span></div>
+                <div class="synced-field-value">${escapeHtml(statusLabel)}</div>
+            </div>
+            <div class="synced-field-box">
+                <div class="synced-field-label"><span>Progress</span><span class="synced-badge">${syncedIcon}</span></div>
+                <div class="synced-field-value synced-progress-wrap">
+                    <div class="synced-progress-bar"><i style="width:${progressVal}%"></i></div>
+                    <span>${progressVal}%</span>
+                </div>
+            </div>
+            <div class="synced-field-box">
+                <div class="synced-field-label"><span>Start date</span><span class="synced-badge">${syncedIcon}</span></div>
+                <div class="synced-field-value">${escapeHtml(startVal)}</div>
+            </div>
+            <div class="synced-field-box">
+                <div class="synced-field-label"><span>Due date</span><span class="synced-badge">${syncedIcon}</span></div>
+                <div class="synced-field-value">${escapeHtml(dueVal)}</div>
+            </div>
         </div>
     `;
     els.plannerSyncedPanel.querySelector("#unlinkPlannerTicketButton").addEventListener("click", () => {

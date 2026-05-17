@@ -257,26 +257,14 @@
                         <p class="eyebrow" id="plannerTaskEyebrow">New task</p>
                         <h2 id="plannerTaskTitle">Add high-level task</h2>
                     </div>
-                    <button class="secondary-button" id="closePlannerTaskButton" type="button">Close</button>
+                    <button class="modal-close-btn" id="closePlannerTaskButton" type="button" aria-label="Close">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
                 </div>
                 <div class="planner-form-grid">
                     <label class="field full">
                         <span>Title *</span>
                         <input id="plannerTaskTitleInput" required placeholder="e.g. Customer escalation - ACME UEM agent rollout">
-                    </label>
-                    <label class="field full">
-                        <span>Description</span>
-                        <textarea id="plannerTaskDescription" rows="3" placeholder="Optional details, links, acceptance notes"></textarea>
-                    </label>
-                    <label class="field">
-                        <span>Team</span>
-                        <select id="plannerTaskTeam"></select>
-                    </label>
-                    <label class="field">
-                        <span>Project *</span>
-                        <input id="plannerTaskProjectSearch" list="plannerProjectOptions" required placeholder="Search Redmine projects">
-                        <input id="plannerTaskProject" type="hidden">
-                        <datalist id="plannerProjectOptions"></datalist>
                     </label>
                     <label class="field full">
                         <span>Category</span>
@@ -288,39 +276,65 @@
                         <input id="plannerTaskPriority" type="hidden">
                         <div class="planner-choice-row priority-choice-row" id="plannerTaskPriorityChoices" role="radiogroup" aria-label="Priority"></div>
                     </label>
-                    <label class="field progress-date-row-progress">
-                        <span>Progress (%)</span>
-                        <input id="plannerTaskProgress" type="number" min="0" max="100" step="1" inputmode="numeric" value="0">
-                    </label>
-                    <label class="field priority-date-row-date">
-                        <span>Start date</span>
-                        <input id="plannerTaskStart" type="date">
-                    </label>
-                    <label class="field priority-date-row-date">
-                        <span>End date *</span>
-                        <input id="plannerTaskDue" type="date" required>
+                    <label class="field">
+                        <span>Project *</span>
+                        <input id="plannerTaskProjectSearch" list="plannerProjectOptions" required placeholder="Search Redmine projects">
+                        <input id="plannerTaskProject" type="hidden">
+                        <datalist id="plannerProjectOptions"></datalist>
                     </label>
                     <label class="field">
                         <span>Redmine ticket</span>
                         <input id="plannerTaskRedmineSearch" list="plannerTicketOptions" placeholder="Recent tickets, issue ID, or Redmine link">
                         <datalist id="plannerTicketOptions"></datalist>
                     </label>
-                    <label class="field">
+                    <label class="field synced-hideable" id="statusFieldWrap">
                         <span>Status</span>
                         <select id="plannerTaskStatus"></select>
                     </label>
+                    <label class="field synced-hideable" id="progressFieldWrap">
+                        <span>Progress (%)</span>
+                        <input id="plannerTaskProgress" type="number" min="0" max="100" step="1" inputmode="numeric" value="0">
+                    </label>
+                    <label class="field synced-hideable" id="startFieldWrap">
+                        <span>Start date</span>
+                        <input id="plannerTaskStart" type="date">
+                    </label>
+                    <label class="field synced-hideable" id="dueFieldWrap">
+                        <span>Due date *</span>
+                        <input id="plannerTaskDue" type="date" required>
+                    </label>
                     <div class="planner-synced-panel is-hidden full" id="plannerSyncedPanel"></div>
-                    <div class="field full">
-                        <span>Assigned members</span>
+                    <div class="field full" id="membersFieldWrap">
+                        <div class="members-field-header">
+                            <span>Assigned members</span>
+                            <span class="synced-badge is-hidden" id="membersSyncedBadge">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                                Synced from Redmine
+                            </span>
+                        </div>
                         <div class="planner-member-picker" id="plannerTaskMembers"></div>
                     </div>
+                    <label class="field full">
+                        <span>Description</span>
+                        <textarea id="plannerTaskDescription" rows="3" placeholder="Optional details, links, acceptance notes"></textarea>
+                    </label>
+                    <label class="field is-hidden" id="teamFieldWrap">
+                        <span>Team</span>
+                        <select id="plannerTaskTeam"></select>
+                    </label>
                     <div class="period-error is-hidden full" id="plannerTaskError" aria-live="polite"></div>
                 </div>
                 <div class="planner-modal-footer">
-                    <button class="secondary-button danger-button is-hidden" id="deletePlannerTaskButton" type="button">Delete</button>
+                    <button class="secondary-button danger-button is-hidden" id="deletePlannerTaskButton" type="button">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                        Delete
+                    </button>
                     <div class="settings-header-actions">
                         <button class="secondary-button" id="cancelPlannerTaskButton" type="button">Cancel</button>
-                        <button class="refresh-button" id="savePlannerTaskButton" type="submit">Create task</button>
+                        <button class="refresh-button" id="savePlannerTaskButton" type="submit">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+                            Create task
+                        </button>
                     </div>
                 </div>
             </form>
