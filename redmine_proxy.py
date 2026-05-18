@@ -112,7 +112,7 @@ class TeamViewHandler(BaseHTTPRequestHandler):
             self.json(200, {"user": services.user_payload(user, services.primary_team_for_user(DB, user["user_id"]))})
         elif path == "/api/bootstrap" and method == "GET":
             db_user = self.db_user(user)
-            lead_teams = services.teams_for_user(DB, db_user["id"]) if db_user["role"] == "lead" else None
+            lead_teams = services.teams_for_user(DB, db_user["id"]) if db_user["role"] in ("lead", "member") else None
             self.json(200, {
                 "user": services.user_payload(user, services.primary_team_for_user(DB, user["user_id"])),
                 "teams": services.list_teams(DB, restrict_to=lead_teams),
@@ -121,7 +121,9 @@ class TeamViewHandler(BaseHTTPRequestHandler):
                 **services.list_lookups(DB),
             })
         elif path == "/api/teams" and method == "GET":
-            self.json(200, {"teams": services.list_teams(DB)})
+            db_user = self.db_user(user)
+            visible_teams = services.teams_for_user(DB, db_user["id"]) if db_user["role"] in ("lead", "member") else None
+            self.json(200, {"teams": services.list_teams(DB, restrict_to=visible_teams)})
         elif path == "/api/teams" and method == "POST":
             team = services.create_team(DB, self.body_json())
             self.json(201, {"team": team})
@@ -130,7 +132,7 @@ class TeamViewHandler(BaseHTTPRequestHandler):
             return
         elif path == "/api/projects" and method == "GET":
             db_user = self.db_user(user)
-            lead_teams = services.teams_for_user(DB, db_user["id"]) if db_user["role"] == "lead" else None
+            lead_teams = services.teams_for_user(DB, db_user["id"]) if db_user["role"] in ("lead", "member") else None
             self.json(200, {"projects": services.list_projects(DB, restrict_to_teams=lead_teams)})
         elif path == "/api/redmine/projects" and method == "GET":
             projects = services.list_redmine_projects(DB, REDMINE, user.get("redmine_api_key"), query.get("q", ""))
@@ -168,6 +170,9 @@ class TeamViewHandler(BaseHTTPRequestHandler):
         team_id = parts[2] if len(parts) > 2 else None
         if not team_id:
             raise ApiError("Team id required.", 400)
+        db_user = self.db_user(user)
+        if db_user["role"] in ("lead", "member") and team_id not in services.teams_for_user(DB, db_user["id"]):
+            raise PermissionError("You do not have access to this team.")
         if len(parts) == 3:
             if method == "GET":
                 team = services.get_team(DB, team_id)
@@ -305,6 +310,7 @@ class TeamViewHandler(BaseHTTPRequestHandler):
 
 def main():
     DB.initialize()
+    services.ensure_planner_schema(DB)
     services.migrate_team_config(DB)
     server = HTTPServer((CONFIG.host, CONFIG.port), TeamViewHandler)
     print(f"Team View backend running at http://{CONFIG.host}:{CONFIG.port}")

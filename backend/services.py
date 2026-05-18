@@ -138,13 +138,75 @@ def teams_for_user(db, user_id):
         """
         SELECT t.id, t.name, t.lead_user_id FROM teams t
         LEFT JOIN team_members tm ON tm.team_id=t.id
-        WHERE t.lead_user_id=%s OR tm.user_id=%s
+        WHERE t.is_active=1 AND (t.lead_user_id=%s OR tm.user_id=%s)
         GROUP BY t.id, t.name, t.lead_user_id
         ORDER BY (t.lead_user_id=%s) DESC, t.name
         """,
         (user_id, user_id, user_id),
     )
     return [row["id"] for row in rows]
+
+
+def ensure_planner_schema(db):
+    columns = {
+        row["COLUMN_NAME"]
+        for row in db.query(
+            """
+            SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='teams'
+            """
+        )
+    }
+    if "parent_team_id" not in columns:
+        db.execute("ALTER TABLE teams ADD COLUMN parent_team_id VARCHAR(32) NULL AFTER description")
+        db.execute("ALTER TABLE teams ADD KEY idx_teams_parent (parent_team_id)")
+        db.execute("ALTER TABLE teams ADD CONSTRAINT fk_teams_parent FOREIGN KEY (parent_team_id) REFERENCES teams(id) ON DELETE SET NULL")
+    if "color" not in columns:
+        db.execute("ALTER TABLE teams ADD COLUMN color VARCHAR(16) NULL AFTER lead_user_id")
+    task_project = db.one(
+        """
+        SELECT IS_NULLABLE
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tasks' AND COLUMN_NAME='project_id'
+        """
+    )
+    if task_project and task_project.get("IS_NULLABLE") == "NO":
+        db.execute("ALTER TABLE tasks MODIFY project_id BIGINT UNSIGNED NULL")
+    task_columns = {
+        row["COLUMN_NAME"]
+        for row in db.query(
+            """
+            SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tasks'
+            """
+        )
+    }
+    if "parent_task_id" not in task_columns:
+        db.execute("ALTER TABLE tasks ADD COLUMN parent_task_id BIGINT UNSIGNED NULL AFTER project_id")
+        db.execute("ALTER TABLE tasks ADD KEY idx_tasks_parent (parent_task_id)")
+        db.execute("ALTER TABLE tasks ADD CONSTRAINT fk_tasks_parent FOREIGN KEY (parent_task_id) REFERENCES tasks(id) ON DELETE SET NULL")
+
+    db.execute(
+        """
+        INSERT INTO teams (id, name, description, parent_team_id, color, is_active)
+        VALUES ('organization', 'Organization', 'Organization-wide top-level work visible to managers.', NULL, '#2563eb', 1)
+        ON DUPLICATE KEY UPDATE
+          name=VALUES(name),
+          description=IF(description IS NULL OR description='', VALUES(description), description),
+          parent_team_id=NULL,
+          color=VALUES(color),
+          is_active=1
+        """
+    )
+    db.execute(
+        """
+        UPDATE teams
+        SET parent_team_id='organization', color=COALESCE(color, '#818cf8')
+        WHERE id='uem' AND (parent_team_id IS NULL OR parent_team_id='')
+        """
+    )
 
 
 def migrate_team_config(db):
@@ -162,7 +224,15 @@ def migrate_team_config(db):
         name = str(team.get("name") or team_id).strip()
         if not team_id or not name:
             continue
-        db.execute("INSERT INTO teams (id,name) VALUES (%s,%s) ON DUPLICATE KEY UPDATE name=VALUES(name)", (team_id, name))
+        parent_team_id = str(team.get("parentTeamId") or "").strip() or None
+        db.execute(
+            """
+            INSERT INTO teams (id,name,parent_team_id)
+            VALUES (%s,%s,%s)
+            ON DUPLICATE KEY UPDATE name=VALUES(name), parent_team_id=VALUES(parent_team_id)
+            """,
+            (team_id, name, parent_team_id),
+        )
         for redmine_id in team.get("memberIds", []):
             if not str(redmine_id).isdigit():
                 continue
@@ -202,7 +272,7 @@ def list_teams(db, restrict_to=None):
         args = list(restrict_to)
     teams = db.query(
         f"""
-        SELECT t.id, t.name, t.description, t.color, t.lead_user_id, t.updated_at,
+        SELECT t.id, t.name, t.description, t.parent_team_id, t.color, t.lead_user_id, t.updated_at,
                COUNT(DISTINCT tm.user_id) AS memberCount,
                COUNT(DISTINCT p.id) AS projectCount,
                u.first_name AS lead_first, u.last_name AS lead_last,
@@ -213,9 +283,9 @@ def list_teams(db, restrict_to=None):
         LEFT JOIN projects p ON p.owner_team_id=t.id AND p.is_active=1
         LEFT JOIN users u ON u.id=t.lead_user_id
         WHERE t.is_active=1{extra}
-        GROUP BY t.id, t.name, t.description, t.color, t.lead_user_id, t.updated_at,
+        GROUP BY t.id, t.name, t.description, t.parent_team_id, t.color, t.lead_user_id, t.updated_at,
                  u.first_name, u.last_name, u.avatar_color, u.avatar_url, u.display_name, u.email
-        ORDER BY t.name
+        ORDER BY (t.id='organization') DESC, t.name
         """,
         args,
     )
@@ -236,6 +306,8 @@ def list_teams(db, restrict_to=None):
             "id": t["id"],
             "name": t["name"],
             "description": t.get("description") or "",
+            "parentTeamId": t.get("parent_team_id") or "",
+            "isRoot": t["id"] == "organization",
             "color": t.get("color") or "#818cf8",
             "memberCount": t["memberCount"],
             "projectCount": t["projectCount"],
@@ -247,7 +319,7 @@ def list_teams(db, restrict_to=None):
 
 def team_config_payload(db):
     payload = []
-    for team in db.query("SELECT id,name FROM teams WHERE is_active=1 ORDER BY name"):
+    for team in db.query("SELECT id,name,parent_team_id FROM teams WHERE is_active=1 ORDER BY name"):
         members = db.query(
             """
             SELECT u.redmine_user_id
@@ -260,6 +332,7 @@ def team_config_payload(db):
         payload.append({
             "id": team["id"],
             "name": team["name"],
+            "parentTeamId": team.get("parent_team_id") or "",
             "memberIds": [member["redmine_user_id"] for member in members],
         })
     return {"teams": payload}
@@ -279,13 +352,16 @@ def save_team_config_payload(db, payload):
                 if not team_id or not name or team_id in seen:
                     raise ValueError("Each team needs a unique id and name.")
                 seen.add(team_id)
+                parent_team_id = str(team.get("parentTeamId") or "").strip() or None
+                if parent_team_id == team_id:
+                    parent_team_id = None
                 cursor.execute(
                     """
-                    INSERT INTO teams (id,name,is_active)
-                    VALUES (%s,%s,1)
-                    ON DUPLICATE KEY UPDATE name=VALUES(name), is_active=1
+                    INSERT INTO teams (id,name,parent_team_id,is_active)
+                    VALUES (%s,%s,%s,1)
+                    ON DUPLICATE KEY UPDATE name=VALUES(name), parent_team_id=VALUES(parent_team_id), is_active=1
                     """,
-                    (team_id, name),
+                    (team_id, name, parent_team_id),
                 )
                 cursor.execute("DELETE FROM team_members WHERE team_id=%s", (team_id,))
                 for redmine_id in team.get("memberIds") or []:
@@ -365,6 +441,8 @@ def get_team(db, team_id):
         "id": team["id"],
         "name": team["name"],
         "description": team.get("description") or "",
+        "parentTeamId": team.get("parent_team_id") or "",
+        "isRoot": team["id"] == "organization",
         "color": team.get("color") or "#818cf8",
         "updatedAt": date_value(team.get("updated_at")),
         "leadUser": lead_user,
@@ -394,9 +472,12 @@ def create_team(db, data):
         idx += 1
     description = str(data.get("description") or "").strip()
     color = str(data.get("color") or "#818cf8").strip()
+    parent_team_id = str(data.get("parentTeamId") or "").strip() or None
+    if parent_team_id == team_id:
+        parent_team_id = None
     db.execute(
-        "INSERT INTO teams (id, name, description, color) VALUES (%s,%s,%s,%s)",
-        (team_id, name, description, color),
+        "INSERT INTO teams (id, name, description, parent_team_id, color) VALUES (%s,%s,%s,%s,%s)",
+        (team_id, name, description, parent_team_id, color),
     )
     # set members
     for uid in data.get("memberIds") or []:
@@ -428,6 +509,12 @@ def update_team(db, team_id, data):
     if "description" in data:
         fields.append("description=%s")
         args.append(str(data["description"]).strip())
+    if "parentTeamId" in data:
+        parent_team_id = str(data.get("parentTeamId") or "").strip() or None
+        if parent_team_id == team_id:
+            parent_team_id = None
+        fields.append("parent_team_id=%s")
+        args.append(parent_team_id)
     if "color" in data:
         fields.append("color=%s")
         args.append(str(data["color"]).strip())
@@ -762,7 +849,7 @@ def date_value(value):
 def list_tasks(db, user, filters):
     where = ["t.deleted_at IS NULL"]
     args = []
-    if user["role"] == "lead":
+    if user["role"] in ("lead", "member"):
         lead_teams = teams_for_user(db, user["id"])
         if lead_teams:
             placeholders = ",".join(["%s"] * len(lead_teams))
@@ -776,6 +863,9 @@ def list_tasks(db, user, filters):
     if filters.get("member_id"):
         where.append("EXISTS (SELECT 1 FROM task_assignments ta WHERE ta.task_id=t.id AND ta.user_id=%s)")
         args.append(filters["member_id"])
+    if filters.get("parent_task_id"):
+        where.append("t.parent_task_id=%s")
+        args.append(filters["parent_task_id"])
     for key, column in (("category", "category_id"), ("priority", "priority_id"), ("status", "status_id")):
         if filters.get(key):
             where.append(f"t.{column}=%s")
@@ -788,7 +878,7 @@ def list_tasks(db, user, filters):
         f"""
         SELECT t.*, p.name AS project_name, p.redmine_identifier, rt.redmine_issue_id, rt.issue_key
         FROM tasks t
-        JOIN projects p ON p.id=t.project_id
+        LEFT JOIN projects p ON p.id=t.project_id
         LEFT JOIN redmine_tickets rt ON rt.id=t.redmine_ticket_id
         WHERE {' AND '.join(where)}
         ORDER BY t.due_date IS NULL, t.due_date, t.updated_at DESC
@@ -803,7 +893,7 @@ def get_task(db, task_id):
         """
         SELECT t.*, p.name AS project_name, p.redmine_identifier, rt.redmine_issue_id, rt.issue_key
         FROM tasks t
-        JOIN projects p ON p.id=t.project_id
+        LEFT JOIN projects p ON p.id=t.project_id
         LEFT JOIN redmine_tickets rt ON rt.id=t.redmine_ticket_id
         WHERE t.id=%s AND t.deleted_at IS NULL
         """,
@@ -824,7 +914,8 @@ def task_payload(db, row):
     return {
         "id": row["id"],
         "teamId": row["team_id"],
-        "projectId": row["project_id"],
+        "projectId": row.get("project_id"),
+        "parentTaskId": row.get("parent_task_id"),
         "projectName": row.get("project_name") or "",
         "categoryId": row["category_id"],
         "priorityId": row["priority_id"],
@@ -881,11 +972,11 @@ def save_task(db, user, payload, task_id=None):
                     raise ValueError("Synced fields are owned by Redmine. Unlink the task before editing them.")
                 cursor.execute(
                     """
-                    UPDATE tasks SET team_id=%s, project_id=%s, category_id=%s, priority_id=%s,
+                    UPDATE tasks SET team_id=%s, project_id=%s, parent_task_id=%s, category_id=%s, priority_id=%s,
                       title=%s, description=%s, updated_by_user_id=%s
                     WHERE id=%s
                     """,
-                    (data["teamId"], data["projectId"], data["categoryId"], data["priorityId"],
+                    (data["teamId"], data["projectId"], data["parentTaskId"], data["categoryId"], data["priorityId"],
                      data["title"], data["description"], user["id"], task_id),
                 )
                 if not existing["redmineLinked"]:
@@ -899,10 +990,10 @@ def save_task(db, user, payload, task_id=None):
                 cursor.execute(
                     """
                     INSERT INTO tasks
-                      (team_id, project_id, category_id, priority_id, status_id, title, description, progress, start_date, due_date, created_by_user_id, updated_by_user_id)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                      (team_id, project_id, parent_task_id, category_id, priority_id, status_id, title, description, progress, start_date, due_date, created_by_user_id, updated_by_user_id)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
-                    (data["teamId"], data["projectId"], data["categoryId"], data["priorityId"],
+                    (data["teamId"], data["projectId"], data["parentTaskId"], data["categoryId"], data["priorityId"],
                      data["statusId"], data["title"], data["description"], data["progress"],
                      data["startDate"], data["dueDate"], user["id"], user["id"]),
                 )
@@ -915,7 +1006,8 @@ def save_task(db, user, payload, task_id=None):
 def normalize_task_input(payload):
     return {
         "teamId": str(payload.get("teamId") or "").strip(),
-        "projectId": int(payload.get("projectId") or 0),
+        "projectId": int(payload["projectId"]) if payload.get("projectId") else None,
+        "parentTaskId": int(payload["parentTaskId"]) if payload.get("parentTaskId") else None,
         "categoryId": str(payload.get("categoryId") or "dev").strip(),
         "priorityId": str(payload.get("priorityId") or "medium").strip(),
         "statusId": str(payload.get("statusId") or "working").strip(),

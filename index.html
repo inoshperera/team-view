@@ -113,23 +113,27 @@
                 <span>Team</span>
                 <select id="plannerTeamFilter"></select>
             </label>
-            <label class="field">
+            <label class="field" id="plannerMemberField">
                 <span>Member</span>
                 <select id="plannerMemberFilter"></select>
             </label>
-            <label class="field">
+            <button class="secondary-button planner-filter-button" id="plannerFilterButton" type="button" aria-expanded="false">
+                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+                Filters
+            </button>
+            <label class="field planner-advanced-filter">
                 <span>Category</span>
                 <select id="plannerCategoryFilter"></select>
             </label>
-            <label class="field">
+            <label class="field planner-advanced-filter">
                 <span>Priority</span>
                 <select id="plannerPriorityFilter"></select>
             </label>
-            <label class="field">
+            <label class="field planner-advanced-filter">
                 <span>Search</span>
                 <input id="plannerSearch" type="search" placeholder="Search title or description">
             </label>
-            <div class="planner-toggle-row">
+            <div class="planner-toggle-row" id="plannerToggleRow">
                 <button class="secondary-button is-selected" id="plannerGroupPriority" type="button">By priority</button>
                 <button class="secondary-button" id="plannerGroupCategory" type="button">By category</button>
             </div>
@@ -233,6 +237,10 @@
                     </button>
                 </div>
                 <div class="planner-form-grid">
+                    <label class="field full is-hidden" id="teamFieldWrap">
+                        <span>Team</span>
+                        <select id="plannerTaskTeam"></select>
+                    </label>
                     <label class="field full">
                         <span>Title *</span>
                         <input id="plannerTaskTitleInput" required placeholder="e.g. Customer escalation - ACME UEM agent rollout">
@@ -247,13 +255,18 @@
                         <input id="plannerTaskPriority" type="hidden">
                         <div class="planner-choice-row priority-choice-row" id="plannerTaskPriorityChoices" role="radiogroup" aria-label="Priority"></div>
                     </label>
-                    <label class="field">
-                        <span>Project *</span>
-                        <input id="plannerTaskProjectSearch" list="plannerProjectOptions" required placeholder="Search Redmine projects">
+                    <div class="planner-extra-toggle-row full">
+                        <button class="secondary-button planner-extra-button" id="plannerExtraFieldsButton" type="button" aria-expanded="false">
+                            Extra fields
+                        </button>
+                    </div>
+                    <label class="field planner-extra-field">
+                        <span>Project</span>
+                        <input id="plannerTaskProjectSearch" list="plannerProjectOptions" placeholder="Search Redmine projects">
                         <input id="plannerTaskProject" type="hidden">
                         <datalist id="plannerProjectOptions"></datalist>
                     </label>
-                    <label class="field">
+                    <label class="field planner-extra-field">
                         <span>Redmine ticket</span>
                         <input id="plannerTaskRedmineSearch" list="plannerTicketOptions" placeholder="Recent tickets, issue ID, or Redmine link">
                         <datalist id="plannerTicketOptions"></datalist>
@@ -288,10 +301,6 @@
                     <label class="field full">
                         <span>Description</span>
                         <textarea id="plannerTaskDescription" rows="3" placeholder="Optional details, links, acceptance notes"></textarea>
-                    </label>
-                    <label class="field is-hidden" id="teamFieldWrap">
-                        <span>Team</span>
-                        <select id="plannerTaskTeam"></select>
                     </label>
                     <div class="period-error is-hidden full" id="plannerTaskError" aria-live="polite"></div>
                 </div>

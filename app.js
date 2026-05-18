@@ -48,8 +48,13 @@ const state = {
             status: "",
             q: ""
         },
+        advancedFiltersOpen: false,
         groupMode: "priority",
         nonePriorityFirst: false,
+        extraFieldsOpen: false,
+        expandedOrgTaskId: null,
+        orgLoadingParentId: null,
+        orgChildTasks: new Map(),
         editorTask: null,
         linkedTicket: null
     },
@@ -161,10 +166,13 @@ const els = {
     plannerControls: document.getElementById("plannerControls"),
     plannerTeamField: document.getElementById("plannerTeamField"),
     plannerTeamFilter: document.getElementById("plannerTeamFilter"),
+    plannerMemberField: document.getElementById("plannerMemberField"),
     plannerMemberFilter: document.getElementById("plannerMemberFilter"),
+    plannerFilterButton: document.getElementById("plannerFilterButton"),
     plannerCategoryFilter: document.getElementById("plannerCategoryFilter"),
     plannerPriorityFilter: document.getElementById("plannerPriorityFilter"),
     plannerSearch: document.getElementById("plannerSearch"),
+    plannerToggleRow: document.getElementById("plannerToggleRow"),
     plannerGroupPriority: document.getElementById("plannerGroupPriority"),
     plannerGroupCategory: document.getElementById("plannerGroupCategory"),
     settingsPanel: document.getElementById("settingsPanel"),
@@ -213,6 +221,7 @@ const els = {
     plannerTaskTitleInput: document.getElementById("plannerTaskTitleInput"),
     plannerTaskDescription: document.getElementById("plannerTaskDescription"),
     plannerTaskTeam: document.getElementById("plannerTaskTeam"),
+    plannerExtraFieldsButton: document.getElementById("plannerExtraFieldsButton"),
     plannerTaskProjectSearch: document.getElementById("plannerTaskProjectSearch"),
     plannerTaskProject: document.getElementById("plannerTaskProject"),
     plannerProjectOptions: document.getElementById("plannerProjectOptions"),
@@ -470,6 +479,7 @@ function bindEvents() {
     els.showDetailedTickets.addEventListener("change", handleShowDetailedTicketsChange);
     els.plannerTeamFilter.addEventListener("change", () => updatePlannerFilter("teamId", els.plannerTeamFilter.value));
     els.plannerMemberFilter.addEventListener("change", () => updatePlannerFilter("memberId", els.plannerMemberFilter.value));
+    els.plannerFilterButton.addEventListener("click", togglePlannerAdvancedFilters);
     els.plannerCategoryFilter.addEventListener("change", () => updatePlannerFilter("category", els.plannerCategoryFilter.value));
     els.plannerPriorityFilter.addEventListener("change", () => updatePlannerFilter("priority", els.plannerPriorityFilter.value));
     els.plannerSearch.addEventListener("input", () => updatePlannerFilter("q", els.plannerSearch.value));
@@ -481,6 +491,7 @@ function bindEvents() {
     els.deletePlannerTaskButton.addEventListener("click", deletePlannerTask);
     els.plannerTaskModal.addEventListener("submit", savePlannerTask);
     els.plannerTaskTeam.addEventListener("change", () => renderPlannerMemberPicker());
+    els.plannerExtraFieldsButton.addEventListener("click", togglePlannerExtraFields);
     els.plannerTaskProjectSearch.addEventListener("input", handlePlannerProjectSearch);
     els.plannerTaskProjectSearch.addEventListener("change", handlePlannerProjectSearch);
     els.plannerTaskRedmineSearch.addEventListener("input", debounce(loadPlannerTicketOptions, 250));
@@ -559,6 +570,7 @@ async function loadPlannerBootstrap() {
     state.teams = (payload.teams || []).map((team) => ({
         id: team.id,
         name: team.name,
+        parentTeamId: team.parentTeamId || "",
         memberIds: (payload.users || []).filter((user) => user.teamIds?.includes(team.id)).map((user) => user.redmineUserId || user.id)
     }));
     state.users = (payload.users || []).map((user) => ({
@@ -573,6 +585,13 @@ async function loadPlannerBootstrap() {
         const validTeamIds = new Set(state.planner.teams.map((t) => t.id));
         if (!validTeamIds.has(state.planner.filters.teamId)) {
             state.planner.filters.teamId = state.auth.user.teamId || state.planner.teams[0]?.id || "";
+        }
+    } else if (["manager", "admin"].includes(state.auth.user?.role)) {
+        const organizationTeam = state.planner.teams.find((team) => team.id === "organization");
+        if (organizationTeam) {
+            state.planner.filters.teamId = organizationTeam.id;
+        } else if (!state.planner.filters.teamId) {
+            state.planner.filters.teamId = "";
         }
     } else if (!state.planner.filters.teamId) {
         state.planner.filters.teamId = "";
@@ -616,9 +635,16 @@ async function refreshPlanner() {
 
 function syncPlannerControls() {
     const canSeeAllTeams = ["manager", "admin"].includes(state.auth.user?.role);
+    const isOrganizationScope = isOrganizationPlannerScope();
     els.plannerTeamField.classList.toggle("is-hidden", !canSeeAllTeams);
-    els.plannerTeamFilter.innerHTML = `<option value="">All teams</option>${state.planner.teams.map((team) => `<option value="${escapeHtml(team.id)}">${escapeHtml(team.name)}</option>`).join("")}`;
+    els.plannerTeamFilter.innerHTML = `<option value="">All team level</option>${sortedPlannerTeams().map((team) => {
+        const prefix = team.parentTeamId ? "\u2514 " : "";
+        return `<option value="${escapeHtml(team.id)}">${escapeHtml(prefix + team.name)}</option>`;
+    }).join("")}`;
     els.plannerTeamFilter.value = state.planner.filters.teamId;
+    els.plannerMemberField.classList.toggle("is-hidden", isOrganizationScope);
+    els.plannerFilterButton.classList.toggle("is-hidden", isOrganizationScope);
+    els.plannerToggleRow.classList.toggle("is-hidden", isOrganizationScope);
     const users = filteredPlannerUsersForTeam(state.planner.filters.teamId);
     els.plannerMemberFilter.innerHTML = `<option value="">All members</option>${users.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("")}`;
     els.plannerMemberFilter.value = state.planner.filters.memberId;
@@ -629,6 +655,13 @@ function syncPlannerControls() {
     els.plannerSearch.value = state.planner.filters.q;
     els.plannerGroupPriority.classList.toggle("is-selected", state.planner.groupMode === "priority");
     els.plannerGroupCategory.classList.toggle("is-selected", state.planner.groupMode === "category");
+    const hasAdvancedFilters = Boolean(state.planner.filters.category || state.planner.filters.priority || state.planner.filters.q);
+    const showAdvanced = !isOrganizationScope && (state.planner.advancedFiltersOpen || hasAdvancedFilters);
+    els.plannerFilterButton.classList.toggle("is-selected", showAdvanced);
+    els.plannerFilterButton.setAttribute("aria-expanded", showAdvanced ? "true" : "false");
+    document.querySelectorAll(".planner-advanced-filter").forEach((field) => {
+        field.classList.toggle("is-hidden", !showAdvanced);
+    });
 }
 
 function filteredPlannerUsersForTeam(teamId) {
@@ -638,13 +671,33 @@ function filteredPlannerUsersForTeam(teamId) {
     return state.planner.users.filter((user) => user.teamIds?.includes(teamId));
 }
 
+function sortedPlannerTeams() {
+    return [...state.planner.teams].sort((a, b) => {
+        if (a.id === "organization") return -1;
+        if (b.id === "organization") return 1;
+        return String(a.name || a.id).localeCompare(String(b.name || b.id));
+    });
+}
+
 function updatePlannerFilter(key, value) {
     state.planner.filters[key] = value;
     if (key === "teamId") {
         state.planner.filters.memberId = "";
+        if (value === "organization") {
+            state.planner.filters.category = "";
+            state.planner.filters.priority = "";
+            state.planner.filters.q = "";
+            state.planner.advancedFiltersOpen = false;
+            state.planner.groupMode = "priority";
+        }
     }
     syncPlannerControls();
     refreshPlanner();
+}
+
+function togglePlannerAdvancedFilters() {
+    state.planner.advancedFiltersOpen = !state.planner.advancedFiltersOpen;
+    syncPlannerControls();
 }
 
 function setPlannerGroup(groupMode) {
@@ -2770,7 +2823,7 @@ function renderPlanner() {
 
     if (state.planner.nonePriorityFirst) {
         els.plannerBoard.classList.add("is-list");
-        els.plannerBoard.classList.remove("is-lanes");
+        els.plannerBoard.classList.remove("is-lanes", "is-organization-list");
         const listTasks = nonePrioritySortedTasks(tasks);
         els.plannerBoard.innerHTML = `
             <div class="planner-none-list-banner">
@@ -2782,9 +2835,13 @@ function renderPlanner() {
             </div>
             ${listTasks.map(renderPlannerTaskCard).join("")}
         `;
+    } else if (isOrganizationPlannerScope()) {
+        els.plannerBoard.classList.add("is-list", "is-organization-list");
+        els.plannerBoard.classList.remove("is-lanes");
+        els.plannerBoard.innerHTML = renderOrganizationPriorityLists(tasks);
     } else {
         els.plannerBoard.classList.add("is-lanes");
-        els.plannerBoard.classList.remove("is-list");
+        els.plannerBoard.classList.remove("is-list", "is-organization-list");
         els.plannerBoard.innerHTML = plannerLaneItems().map((lane) => {
             const laneTasks = tasks.filter((task) => state.planner.groupMode === "priority" ? task.priorityId === lane.id : task.categoryId === lane.id);
             return `
@@ -2804,24 +2861,88 @@ function renderPlanner() {
     els.plannerBoard.querySelector("#closeNonePriorityListButton")?.addEventListener("click", closeNonePriorityTasksFirst);
     els.plannerBoard.querySelectorAll("[data-planner-edit]").forEach((button) => {
         button.addEventListener("click", () => {
-            const task = state.planner.tasks.find((item) => String(item.id) === button.dataset.plannerEdit);
+            const task = findPlannerTaskById(button.dataset.plannerEdit);
             openPlannerEditor(task);
         });
     });
     els.plannerBoard.querySelectorAll("[data-planner-delete]").forEach((button) => {
         button.addEventListener("click", async () => {
             const taskId = button.dataset.plannerDelete;
-            const task = state.planner.tasks.find((item) => String(item.id) === taskId);
+            const task = findPlannerTaskById(taskId);
             if (!task) return;
             if (!confirm(`Delete "${task.title}"?`)) return;
             try {
                 await apiJson(`/api/tasks/${taskId}`, { method: "DELETE" });
+                invalidateOrgChildCache(task.parentTaskId);
                 await refreshPlanner();
             } catch (error) {
                 alert(error.message || "Failed to delete task.");
             }
         });
     });
+    els.plannerBoard.querySelectorAll("[data-planner-progress]").forEach((button) => {
+        button.addEventListener("click", async () => {
+            const task = findPlannerTaskById(button.dataset.plannerProgress);
+            if (!task || task.redmineLinked) {
+                return;
+            }
+            await editPlannerTaskProgress(task);
+        });
+    });
+    els.plannerBoard.querySelectorAll("[data-org-expand]").forEach((row) => {
+        row.addEventListener("click", async (event) => {
+            if (event.target.closest("button")) {
+                return;
+            }
+            await toggleOrganizationTaskChildren(row.dataset.orgExpand);
+        });
+    });
+}
+
+function findPlannerTaskById(taskId) {
+    const id = String(taskId);
+    const task = state.planner.tasks.find((item) => String(item.id) === id);
+    if (task) {
+        return task;
+    }
+    for (const children of state.planner.orgChildTasks.values()) {
+        const child = children.find((item) => String(item.id) === id);
+        if (child) {
+            return child;
+        }
+    }
+    return null;
+}
+
+async function toggleOrganizationTaskChildren(taskId) {
+    const id = String(taskId);
+    if (String(state.planner.expandedOrgTaskId || "") === id) {
+        state.planner.expandedOrgTaskId = null;
+        renderPlanner();
+        return;
+    }
+    state.planner.expandedOrgTaskId = id;
+    if (!state.planner.orgChildTasks.has(id)) {
+        state.planner.orgLoadingParentId = id;
+        renderPlanner();
+        try {
+            const payload = await apiJson(`/api/tasks?parent_task_id=${encodeURIComponent(id)}`);
+            state.planner.orgChildTasks.set(id, payload.tasks || []);
+        } catch (error) {
+            state.planner.orgChildTasks.set(id, []);
+            alert(error.message || "Unable to load child tasks.");
+        } finally {
+            state.planner.orgLoadingParentId = null;
+        }
+    }
+    renderPlanner();
+}
+
+function invalidateOrgChildCache(parentTaskId) {
+    if (!parentTaskId) {
+        return;
+    }
+    state.planner.orgChildTasks.delete(String(parentTaskId));
 }
 
 function nonePrioritySortedTasks(tasks) {
@@ -2841,12 +2962,154 @@ function plannerLaneItems() {
         : state.planner.categories;
 }
 
+function isOrganizationPlannerScope() {
+    return state.planner.filters.teamId === "organization";
+}
+
+function organizationSortedTasks(tasks) {
+    const priorityOrder = new Map(state.planner.priorities.map((priority, index) => [priority.id, index]));
+    return [...tasks].sort((a, b) => {
+        const byPriority = (priorityOrder.get(a.priorityId) ?? 999) - (priorityOrder.get(b.priorityId) ?? 999);
+        if (byPriority !== 0) {
+            return byPriority;
+        }
+        return String(a.dueDate || "9999-99-99").localeCompare(String(b.dueDate || "9999-99-99"));
+    });
+}
+
+function renderOrganizationPriorityLists(tasks) {
+    const grouped = state.planner.priorities
+        .filter((priority) => priority.id !== "none")
+        .map((priority) => ({
+            priority,
+            tasks: organizationSortedTasks(tasks.filter((task) => task.priorityId === priority.id))
+        }))
+        .filter((group) => group.tasks.length > 0);
+    return grouped.map(({ priority, tasks }) => `
+        <section class="org-priority-section ${escapeHtml(priority.colorClass || "")}">
+            <div class="org-priority-title">
+                <span class="priority-dot ${escapeHtml(priority.colorClass || "")}"></span>
+                <span>${escapeHtml(priority.label)}</span>
+                <span class="lane-count">${tasks.length}</span>
+            </div>
+            <div class="org-task-list">
+                ${tasks.map(renderOrganizationTaskRow).join("")}
+            </div>
+        </section>
+    `).join("");
+}
+
+function renderOrganizationTaskRow(task) {
+    const priority = lookup(state.planner.priorities, task.priorityId);
+    const category = lookup(state.planner.categories, task.categoryId);
+    const status = lookup(state.planner.statuses, task.statusId);
+    const team = lookup(state.planner.teams, task.teamId);
+    const showTeamChip = team && team.id !== "organization";
+    const progress = clampProgress(task.progress);
+    const memberIcons = (task.members || []).map((member) => `
+        <span class="mini-avatar ${escapeHtml(member.avatarColor || "")}" title="${escapeHtml(member.name)}">${escapeHtml(member.initials || initialsFromName(member.name))}</span>
+    `).join("");
+    const taskId = String(task.id);
+    const isExpanded = String(state.planner.expandedOrgTaskId || "") === taskId;
+    const isLoading = String(state.planner.orgLoadingParentId || "") === taskId;
+    const children = state.planner.orgChildTasks.get(taskId) || [];
+    const childPanel = isExpanded ? `
+        <div class="org-child-panel">
+            ${isLoading ? `<div class="empty-mini">Loading linked team tasks...</div>` : ""}
+            ${!isLoading && children.length ? children.map(renderOrganizationChildTaskRow).join("") : ""}
+            ${!isLoading && !children.length ? `<div class="empty-mini">No linked team tasks yet.</div>` : ""}
+        </div>
+    ` : "";
+    const progressMarkup = task.redmineLinked
+        ? `<div class="org-progress" title="Progress completed">
+               <span>${progress}%</span>
+               <div class="org-progress-track"><i style="width:${progress}%"></i></div>
+           </div>`
+        : `<button class="org-progress org-progress-button" type="button" data-planner-progress="${task.id}" title="Edit progress completed">
+               <span>${progress}%</span>
+               <div class="org-progress-track"><i style="width:${progress}%"></i></div>
+           </button>`;
+    const linkedChip = task.redmineLinked
+        ? `<span class="planner-chip chip-synced" title="${escapeHtml(task.issueKey || "")}">
+               <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+           </span>`
+        : "";
+    return `
+        <div class="org-task-group ${isExpanded ? "is-expanded" : ""}">
+            <article class="org-task-row ${escapeHtml(priority?.colorClass || "")}" data-org-expand="${escapeHtml(task.id)}">
+                <div class="org-task-main">
+                    <div class="planner-chip-row">
+                        <span class="planner-chip ${escapeHtml(category?.colorClass || "")}">${escapeHtml(category?.label || task.categoryId)}</span>
+                        ${showTeamChip ? `<span class="planner-chip chip-team">${escapeHtml(team.name)}</span>` : ""}
+                        ${linkedChip}
+                        <span class="status-pill ${escapeHtml(status?.colorClass || "")}">${escapeHtml(status?.label || task.statusId)}</span>
+                    </div>
+                    <h2>${escapeHtml(task.title)}</h2>
+                    ${task.description ? `<p class="card-desc">${escapeHtml(task.description)}</p>` : ""}
+                </div>
+                <div class="org-task-actions">
+                    <div class="org-member-icons" aria-label="Assigned members">${memberIcons}</div>
+                    ${progressMarkup}
+                    <button class="card-action-btn org-action-btn" type="button" data-planner-edit="${task.id}" aria-label="Edit task" title="Edit">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    </button>
+                    <button class="card-action-btn card-action-delete org-action-btn" type="button" data-planner-delete="${task.id}" aria-label="Delete task" title="Delete">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                    </button>
+                </div>
+            </article>
+            ${childPanel}
+        </div>
+    `;
+}
+
+function renderOrganizationChildTaskRow(task) {
+    const category = lookup(state.planner.categories, task.categoryId);
+    const status = lookup(state.planner.statuses, task.statusId);
+    const team = lookup(state.planner.teams, task.teamId);
+    const progress = clampProgress(task.progress);
+    const memberIcons = (task.members || []).map((member) => `
+        <span class="mini-avatar ${escapeHtml(member.avatarColor || "")}" title="${escapeHtml(member.name)}">${escapeHtml(member.initials || initialsFromName(member.name))}</span>
+    `).join("");
+    const progressMarkup = task.redmineLinked
+        ? `<div class="org-progress" title="Progress completed"><span>${progress}%</span><div class="org-progress-track"><i style="width:${progress}%"></i></div></div>`
+        : `<button class="org-progress org-progress-button" type="button" data-planner-progress="${task.id}" title="Edit progress completed"><span>${progress}%</span><div class="org-progress-track"><i style="width:${progress}%"></i></div></button>`;
+    return `
+        <article class="org-child-row">
+            <div class="org-task-main">
+                <div class="planner-chip-row">
+                    ${team ? `<span class="planner-chip chip-team">${escapeHtml(team.name)}</span>` : ""}
+                    <span class="planner-chip ${escapeHtml(category?.colorClass || "")}">${escapeHtml(category?.label || task.categoryId)}</span>
+                    <span class="status-pill ${escapeHtml(status?.colorClass || "")}">${escapeHtml(status?.label || task.statusId)}</span>
+                </div>
+                <h3>${escapeHtml(task.title)}</h3>
+                ${task.description ? `<p class="card-desc">${escapeHtml(task.description)}</p>` : ""}
+            </div>
+            <div class="org-task-actions">
+                <div class="org-member-icons" aria-label="Assigned members">${memberIcons}</div>
+                ${progressMarkup}
+                <button class="card-action-btn org-action-btn" type="button" data-planner-edit="${task.id}" aria-label="Edit task" title="Edit">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                </button>
+                <button class="card-action-btn card-action-delete org-action-btn" type="button" data-planner-delete="${task.id}" aria-label="Delete task" title="Delete">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                </button>
+            </div>
+        </article>
+    `;
+}
+
 function renderPlannerTaskCard(task) {
     const priority = lookup(state.planner.priorities, task.priorityId);
     const category = lookup(state.planner.categories, task.categoryId);
     const status = lookup(state.planner.statuses, task.statusId);
     const team = lookup(state.planner.teams, task.teamId);
     const due = dueLabel(task.dueDate);
+    const progress = clampProgress(task.progress);
+    const priorityLabel = priority?.label || task.priorityId || "Priority";
+    const progressMarkup = task.redmineLinked
+        ? `<div class="planner-progress-cell"><span>Progress completed</span><strong>${progress}%</strong><div class="planner-progress"><i style="width:${progress}%"></i></div></div>`
+        : `<button class="planner-progress-cell planner-progress-button" type="button" data-planner-progress="${task.id}" title="Edit progress completed"><span>Progress completed</span><strong>${progress}%</strong><div class="planner-progress"><i style="width:${progress}%"></i></div></button>`;
     const linkedChip = task.redmineLinked
         ? `<span class="planner-chip chip-synced" title="${escapeHtml(task.issueKey || "")}">
                <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
@@ -2859,16 +3122,16 @@ function renderPlannerTaskCard(task) {
                     <span class="planner-chip ${escapeHtml(category?.colorClass || "")}">${escapeHtml(category?.label || task.categoryId)}</span>
                     ${team ? `<span class="planner-chip chip-team">${escapeHtml(team.name)}</span>` : ""}
                     ${linkedChip}
-                    <span class="status-pill">${escapeHtml(status?.label || task.statusId)}</span>
+                    <span class="status-pill ${escapeHtml(status?.colorClass || "")}">${escapeHtml(status?.label || task.statusId)}</span>
                 </div>
             </div>
             <h2>${escapeHtml(task.title)}</h2>
             ${task.description ? `<p class="card-desc">${escapeHtml(task.description)}</p>` : ""}
             <div class="planner-card-grid">
-                <div><span>Project</span><strong>${escapeHtml(task.projectName || "Project")}</strong></div>
-                <div><span>Priority</span><strong class="priority-val">${escapeHtml(priority?.label || task.priorityId)}</strong></div>
+                <div><span>Project</span><strong>${escapeHtml(task.projectName || "Not set")}</strong></div>
+                <div><span>Priority</span><strong class="priority-val"><span class="priority-dot ${escapeHtml(priority?.colorClass || "")}"></span>${escapeHtml(priorityLabel)}</strong></div>
                 <div><span>Due</span><strong class="${due.className}">${escapeHtml(task.dueDate || "Not set")}</strong><small>${escapeHtml(due.label)}</small></div>
-                <div><span>Linked issue</span><strong class="issue-key-val">${task.issueKey ? `<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> ${escapeHtml(task.issueKey)}` : "Not linked"}</strong></div>
+                ${progressMarkup}
             </div>
             <div class="planner-members">
                 <span>MEMBERS (${task.members?.length || 0})</span>
@@ -2884,6 +3147,37 @@ function renderPlannerTaskCard(task) {
             </div>
         </article>
     `;
+}
+
+async function editPlannerTaskProgress(task) {
+    const nextValue = window.prompt("Progress completed (%)", String(clampProgress(task.progress)));
+    if (nextValue === null) {
+        return;
+    }
+    const progress = clampProgress(nextValue);
+    try {
+        await apiJson(`/api/tasks/${task.id}`, {
+            method: "PATCH",
+            body: {
+                teamId: task.teamId,
+                projectId: task.projectId || null,
+                parentTaskId: task.parentTaskId || null,
+                categoryId: task.categoryId,
+                priorityId: task.priorityId,
+                statusId: task.statusId,
+                title: task.title,
+                description: task.description,
+                progress,
+                startDate: task.startDate,
+                dueDate: task.dueDate,
+                memberIds: task.memberIds || []
+            }
+        });
+        invalidateOrgChildCache(task.parentTaskId);
+        await refreshPlanner();
+    } catch (error) {
+        alert(error.message || "Unable to update progress.");
+    }
 }
 
 function lookup(items, id) {
@@ -3266,10 +3560,12 @@ async function openPlannerEditor(task) {
     els.savePlannerTaskButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>${task ? " Save changes" : " Create task"}`;
     els.deletePlannerTaskButton.classList.toggle("is-hidden", !task);
     fillPlannerEditorOptions(task);
+    state.planner.extraFieldsOpen = Boolean(task?.projectId || task?.issueKey || task?.redmineIssueId);
+    syncPlannerExtraFields();
     els.plannerTaskTitleInput.value = task?.title || "";
     els.plannerTaskDescription.value = task?.description || "";
-    els.plannerTaskTeam.value = task?.teamId || state.planner.filters.teamId || state.auth.user?.teamId || state.planner.teams[0]?.id || "";
-    setPlannerProjectValue(task?.projectId || state.planner.projects[0]?.id || "");
+    els.plannerTaskTeam.value = task?.teamId || defaultPlannerEditorTeamId();
+    setPlannerProjectValue(task?.projectId || "");
     setPlannerChoiceValue("category", task?.categoryId || "dev");
     setPlannerChoiceValue("priority", task?.priorityId || "medium");
     els.plannerTaskStatus.value = task?.statusId || "working";
@@ -3295,11 +3591,18 @@ function fillPlannerEditorOptions(task) {
     els.plannerTaskTeam.disabled = !canPickTeam;
     const teamWrap = document.getElementById("teamFieldWrap");
     if (teamWrap) teamWrap.classList.toggle("is-hidden", !canPickTeam);
-    els.plannerTaskTeam.innerHTML = state.planner.teams.map((team) => `<option value="${escapeHtml(team.id)}">${escapeHtml(team.name)}</option>`).join("");
+    els.plannerTaskTeam.innerHTML = sortedPlannerTeams().map((team) => `<option value="${escapeHtml(team.id)}">${escapeHtml(team.name)}</option>`).join("");
     els.plannerProjectOptions.innerHTML = state.planner.projects.map((project) => `<option value="${escapeHtml(project.name)}">${escapeHtml(project.redmineIdentifier || project.source || "")}</option>`).join("");
     renderPlannerChoiceGroup("category");
     renderPlannerChoiceGroup("priority");
     els.plannerTaskStatus.innerHTML = state.planner.statuses.map((item) => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("");
+}
+
+function defaultPlannerEditorTeamId() {
+    if (["manager", "admin"].includes(state.auth.user?.role)) {
+        return state.planner.teams.find((team) => team.id === "organization")?.id || sortedPlannerTeams()[0]?.id || "";
+    }
+    return state.auth.user?.teamId || state.planner.filters.teamId || sortedPlannerTeams()[0]?.id || "";
 }
 
 function renderPlannerChoiceGroup(kind) {
@@ -3334,7 +3637,7 @@ function setPlannerChoiceValue(kind, value) {
 }
 
 function setPlannerProjectValue(projectId) {
-    const project = state.planner.projects.find((item) => Number(item.id) === Number(projectId)) || state.planner.projects[0];
+    const project = state.planner.projects.find((item) => Number(item.id) === Number(projectId));
     els.plannerTaskProject.value = project?.id || "";
     els.plannerTaskProjectSearch.value = project?.name || "";
 }
@@ -3469,6 +3772,20 @@ async function loadPlannerTicketOptions() {
     }
 }
 
+function togglePlannerExtraFields() {
+    state.planner.extraFieldsOpen = !state.planner.extraFieldsOpen;
+    syncPlannerExtraFields();
+}
+
+function syncPlannerExtraFields() {
+    const showExtra = state.planner.extraFieldsOpen;
+    els.plannerExtraFieldsButton.classList.toggle("is-selected", showExtra);
+    els.plannerExtraFieldsButton.setAttribute("aria-expanded", showExtra ? "true" : "false");
+    document.querySelectorAll(".planner-extra-field").forEach((field) => {
+        field.classList.toggle("is-hidden", !showExtra);
+    });
+}
+
 function applyPlannerLinkedTicket(ticket) {
     state.planner.linkedTicket = {
         ...ticket,
@@ -3504,20 +3821,19 @@ function clampProgress(value) {
 
 async function savePlannerTask(event) {
     event.preventDefault();
+    const task = state.planner.editorTask;
     const selectedProject = findPlannerProject(els.plannerTaskProjectSearch.value);
     if (selectedProject) {
         els.plannerTaskProject.value = selectedProject.id;
-    }
-    if (!els.plannerTaskProject.value) {
-        els.plannerTaskError.textContent = "Select a Redmine project from the project list.";
-        els.plannerTaskError.classList.remove("is-hidden");
-        return;
+    } else if (!els.plannerTaskProjectSearch.value.trim()) {
+        els.plannerTaskProject.value = "";
     }
     clampPlannerProgressInput();
     const memberIds = [...els.plannerTaskMembers.querySelectorAll("input[type='checkbox']:checked")].map((input) => Number(input.value));
     const body = {
         teamId: els.plannerTaskTeam.value,
-        projectId: Number(els.plannerTaskProject.value),
+        projectId: els.plannerTaskProject.value ? Number(els.plannerTaskProject.value) : null,
+        parentTaskId: task?.parentTaskId || null,
         categoryId: els.plannerTaskCategory.value,
         priorityId: els.plannerTaskPriority.value,
         statusId: els.plannerTaskStatus.value,
@@ -3528,7 +3844,6 @@ async function savePlannerTask(event) {
         dueDate: els.plannerTaskDue.value,
         memberIds
     };
-    const task = state.planner.editorTask;
     try {
         const saved = await apiJson(task ? `/api/tasks/${task.id}` : "/api/tasks", {
             method: task ? "PATCH" : "POST",
@@ -3539,6 +3854,7 @@ async function savePlannerTask(event) {
             await apiJson(`/api/tasks/${saved.task.id}/link`, { method: "POST", body: { value: linkValue } });
         }
         closePlannerEditor();
+        invalidateOrgChildCache(body.parentTaskId);
         await refreshPlanner();
     } catch (error) {
         els.plannerTaskError.textContent = error.message || "Unable to save task.";
@@ -3553,6 +3869,7 @@ async function deletePlannerTask() {
     }
     await apiJson(`/api/tasks/${task.id}`, { method: "DELETE" });
     closePlannerEditor();
+    invalidateOrgChildCache(task.parentTaskId);
     await refreshPlanner();
 }
 

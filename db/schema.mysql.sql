@@ -44,12 +44,16 @@ CREATE TABLE IF NOT EXISTS teams (
   id VARCHAR(32) NOT NULL,
   name VARCHAR(120) NOT NULL,
   description VARCHAR(500) NULL,
+  parent_team_id VARCHAR(32) NULL,
   lead_user_id BIGINT UNSIGNED NULL,
+  color VARCHAR(16) NULL,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
+  KEY idx_teams_parent (parent_team_id),
   KEY idx_teams_lead (lead_user_id),
+  CONSTRAINT fk_teams_parent FOREIGN KEY (parent_team_id) REFERENCES teams(id) ON DELETE SET NULL,
   CONSTRAINT fk_teams_lead FOREIGN KEY (lead_user_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -145,7 +149,8 @@ CREATE TABLE IF NOT EXISTS redmine_ticket_assignees (
 CREATE TABLE IF NOT EXISTS tasks (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   team_id VARCHAR(32) NOT NULL,
-  project_id BIGINT UNSIGNED NOT NULL,
+  project_id BIGINT UNSIGNED NULL,
+  parent_task_id BIGINT UNSIGNED NULL,
   category_id VARCHAR(16) NOT NULL,
   priority_id VARCHAR(16) NOT NULL DEFAULT 'medium',
   status_id VARCHAR(16) NOT NULL DEFAULT 'working',
@@ -168,9 +173,11 @@ CREATE TABLE IF NOT EXISTS tasks (
   KEY idx_tasks_due (due_date, deleted_at),
   KEY idx_tasks_redmine (redmine_ticket_id),
   KEY idx_tasks_project (project_id),
+  KEY idx_tasks_parent (parent_task_id),
   CONSTRAINT chk_tasks_progress CHECK (progress BETWEEN 0 AND 100),
   CONSTRAINT fk_tasks_team FOREIGN KEY (team_id) REFERENCES teams(id),
   CONSTRAINT fk_tasks_project FOREIGN KEY (project_id) REFERENCES projects(id),
+  CONSTRAINT fk_tasks_parent FOREIGN KEY (parent_task_id) REFERENCES tasks(id) ON DELETE SET NULL,
   CONSTRAINT fk_tasks_category FOREIGN KEY (category_id) REFERENCES categories(id),
   CONSTRAINT fk_tasks_priority FOREIGN KEY (priority_id) REFERENCES priorities(id),
   CONSTRAINT fk_tasks_status FOREIGN KEY (status_id) REFERENCES statuses(id),
@@ -226,7 +233,9 @@ INSERT INTO statuses (id, label, is_terminal, sort_order, color_class) VALUES
   ('done', 'Done', 1, 40, 'pill-done')
 ON DUPLICATE KEY UPDATE label = VALUES(label), is_terminal = VALUES(is_terminal), sort_order = VALUES(sort_order), color_class = VALUES(color_class);
 
-INSERT INTO teams (id, name) VALUES ('uem', 'UEM')
+INSERT INTO teams (id, name) VALUES
+  ('organization', 'Organization'),
+  ('uem', 'UEM')
 ON DUPLICATE KEY UPDATE name = VALUES(name), is_active = 1;
 
 INSERT INTO projects (name, source, redmine_identifier, owner_team_id) VALUES
