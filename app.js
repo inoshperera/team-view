@@ -60,12 +60,30 @@ const state = {
     period: null,
     detailMemberId: null,
     settingsOpen: false,
+    previousView: "planner",
     teamDraft: {
         teams: [],
         errors: [],
         openTeamId: "",
         searchQueries: {},
         expandedMemberLists: {}
+    },
+    teamMgmt: {
+        teams: [],
+        allUsers: [],
+        allProjects: [],
+        selectedTeamId: null,
+        selectedTeam: null,
+        search: "",
+        loading: false,
+        error: null,
+        renaming: false,
+        changingLead: false,
+        editingProjects: false,
+        addingMember: false,
+        pendingProjectIds: null,
+        projectSearch: "",
+        wizard: null,
     },
     work: {
         mode: "team",
@@ -115,6 +133,7 @@ const els = {
     plannerBoard: document.getElementById("plannerBoard"),
     emptyState: document.getElementById("emptyState"),
     notice: document.getElementById("globalNotice"),
+    noticeBar: document.getElementById("noticeBar"),
     refreshButton: document.getElementById("refreshButton"),
     logoutButton: null,
     addPlannerTaskButton: document.getElementById("addPlannerTaskButton"),
@@ -150,12 +169,15 @@ const els = {
     plannerGroupCategory: document.getElementById("plannerGroupCategory"),
     settingsPanel: document.getElementById("settingsPanel"),
     closeSettingsButton: document.getElementById("closeSettingsButton"),
-    saveTeamsButton: document.getElementById("saveTeamsButton"),
-    newTeamName: document.getElementById("newTeamName"),
-    addTeamButton: document.getElementById("addTeamButton"),
-    teamSettingsList: document.getElementById("teamSettingsList"),
-    teamConfigJson: document.getElementById("teamConfigJson"),
-    settingsError: document.getElementById("settingsError"),
+    saveTeamsButton: null,
+    newTeamName: null,
+    addTeamButton: null,
+    teamSettingsList: null,
+    teamConfigJson: null,
+    settingsError: null,
+    teamMgmtShell: document.getElementById("teamMgmtShell"),
+    syncBadge: document.getElementById("syncBadge"),
+    newTeamButton: null,
     timeSummaryStrip: document.getElementById("timeSummaryStrip"),
     workSummaryStrip: document.getElementById("workSummaryStrip"),
     workTicketCount: document.getElementById("workTicketCount"),
@@ -221,7 +243,6 @@ async function init() {
     bindEvents();
     syncPeriodControls();
     syncWorkControls();
-    renderTeamSettings();
     renderStaticHeader();
 
     await loadPublicProxyConfig();
@@ -286,7 +307,6 @@ async function loadTeamConfigFromFile() {
     state.work.teamId = state.teams[0]?.id || "";
     state.work.memberIds = [];
     syncWorkControls();
-    renderTeamSettings();
 }
 
 async function loadWorkPhraseConfig() {
@@ -444,12 +464,10 @@ function bindEvents() {
     els.applyRangeButton.addEventListener("click", applyCustomRange);
     els.closeDetailButton.addEventListener("click", closeDetailView);
     els.closeSettingsButton.addEventListener("click", closeSettings);
-    els.saveTeamsButton.addEventListener("click", saveTeamConfigToFile);
     els.workScopeMode.addEventListener("change", handleWorkScopeModeChange);
     els.workTeamSelect.addEventListener("change", handleWorkTeamChange);
     els.workUserSearch.addEventListener("input", handleWorkUserSearch);
     els.showDetailedTickets.addEventListener("change", handleShowDetailedTicketsChange);
-    els.addTeamButton.addEventListener("click", addDraftTeam);
     els.plannerTeamFilter.addEventListener("change", () => updatePlannerFilter("teamId", els.plannerTeamFilter.value));
     els.plannerMemberFilter.addEventListener("change", () => updatePlannerFilter("memberId", els.plannerMemberFilter.value));
     els.plannerCategoryFilter.addEventListener("change", () => updatePlannerFilter("category", els.plannerCategoryFilter.value));
@@ -654,8 +672,8 @@ function closeNonePriorityTasksFirst() {
 
 function handleViewChange() {
     state.view = els.viewSelect.value;
+    state.settingsOpen = false;
     closeDetailView();
-    closeSettings();
     render();
     if (state.view === "planner" && state.planner.tasks.length === 0) {
         refreshPlanner();
@@ -976,65 +994,896 @@ function describeWorkScope() {
 }
 
 function openSettings() {
+    if (state.view !== "settings") {
+        state.previousView = state.view;
+    }
+    state.view = "settings";
     state.settingsOpen = true;
-    state.teamDraft = createTeamDraft(state.teams);
-    renderTeamSettings();
     render();
-    els.settingsPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+    loadTeamMgmt();
 }
 
 function closeSettings() {
     state.settingsOpen = false;
+    state.view = state.previousView || "planner";
     render();
 }
 
-function addDraftTeam() {
-    const name = els.newTeamName.value.trim();
-    if (!name) {
-        state.teamDraft.errors = ["Enter a team name."];
-        renderTeamSettings();
+// ─── Team management (new split-list + detail + wizard) ──────────────
+
+const WIZARD_COLORS = ["#22d3ee", "#818cf8", "#4ade80", "#f87171", "#2dd4bf", "#f472b6"];
+const WIZARD_STEPS = [
+    { num: 1, label: "Team details" },
+    { num: 2, label: "Owning projects" },
+    { num: 3, label: "Add members" },
+    { num: 4, label: "Assign lead" },
+    { num: 5, label: "Review" },
+];
+
+function teamBadgeInitials(teamId) {
+    const parts = String(teamId || "").split("-").filter(Boolean);
+    if (parts.length >= 2) {
+        return parts.slice(0, 3).map((p) => p[0]).join("").toUpperCase();
+    }
+    return String(teamId || "T").slice(0, 2).toUpperCase();
+}
+
+function teamBadgeHtml(team, small) {
+    const cls = small ? "team-badge team-badge-sm" : "team-badge";
+    const color = team.color || "#818cf8";
+    const initText = teamBadgeInitials(team.id);
+    return `<span class="${cls}" style="background:${escapeHtml(color)}">${escapeHtml(initText)}</span>`;
+}
+
+function userAvatarHtml(user, size) {
+    size = size || 32;
+    const color = user.avatarColor || "av-a";
+    const initText = user.initials || initialsFromName(user.name);
+    return `<span class="planner-avatar ${escapeHtml(color)}" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.38)}px">${escapeHtml(initText)}</span>`;
+}
+
+async function loadTeamMgmt() {
+    state.teamMgmt.loading = true;
+    state.teamMgmt.error = null;
+    renderTeamMgmt();
+    try {
+        const [teamsPayload, usersPayload, projectsPayload] = await Promise.all([
+            apiJson("/api/teams"),
+            apiJson("/api/users"),
+            apiJson("/api/projects").catch(() => ({ projects: [] })),
+        ]);
+        state.teamMgmt.teams = teamsPayload.teams || [];
+        state.teamMgmt.allUsers = usersPayload.users || [];
+        state.teamMgmt.allProjects = projectsPayload.projects || [];
+        // update sync badge
+        const userCount = state.teamMgmt.allUsers.length;
+        if (els.syncBadge) {
+            els.syncBadge.textContent = `Synced with directory · ${userCount} user${userCount === 1 ? "" : "s"}`;
+        }
+    } catch (err) {
+        state.teamMgmt.error = err.message || "Failed to load teams.";
+    }
+    state.teamMgmt.loading = false;
+    renderTeamMgmt();
+}
+
+function renderTeamMgmt() {
+    const shell = els.teamMgmtShell;
+    if (!shell) return;
+    // bind new team button each render
+    const newBtn = document.getElementById("newTeamButton");
+    if (newBtn && !newBtn._bound) {
+        newBtn._bound = true;
+        newBtn.addEventListener("click", startNewTeamWizard);
+    }
+    if (state.teamMgmt.loading) {
+        shell.innerHTML = `<div style="padding:24px;color:var(--muted)">Loading teams…</div>`;
         return;
     }
-    const id = slugify(name);
-    state.teamDraft.teams.push({ id, name, memberIds: [] });
-    state.teamDraft.openTeamId = id;
-    els.newTeamName.value = "";
-    validateTeamDraft();
-    applyValidTeamDraft();
-    renderTeamSettings();
-    syncWorkControls();
+    if (state.teamMgmt.error) {
+        shell.innerHTML = `<div style="padding:24px;color:var(--attention)">${escapeHtml(state.teamMgmt.error)}</div>`;
+        return;
+    }
+    if (state.teamMgmt.wizard) {
+        shell.innerHTML = renderTeamWizardHtml();
+        bindWizardEvents();
+        return;
+    }
+    shell.innerHTML = `
+        <div class="team-list-panel">
+            ${renderTeamListHtml()}
+        </div>
+        <div class="team-detail-panel" id="teamDetailPanel">
+            ${renderTeamDetailHtml()}
+        </div>
+    `;
+    bindTeamListEvents();
+    bindTeamDetailEvents();
+}
+
+function renderTeamListHtml() {
+    const search = state.teamMgmt.search.toLowerCase();
+    const teams = state.teamMgmt.teams.filter((t) =>
+        !search || t.name.toLowerCase().includes(search) || t.id.toLowerCase().includes(search)
+    );
+    const items = teams.map((t) => {
+        const selected = t.id === state.teamMgmt.selectedTeamId ? "is-selected" : "";
+        const memberUsers = state.teamMgmt.allUsers
+            .filter((u) => (u.teamIds || []).includes(t.id))
+            .slice(0, 3);
+        const bubbles = memberUsers.map((u) => {
+            const color = u.avatarColor || "av-a";
+            const init = u.initials || initialsFromName(u.name);
+            return `<span class="team-bubble ${escapeHtml(color)}">${escapeHtml(init)}</span>`;
+        }).join("");
+        return `
+            <div class="team-list-item ${selected}" data-team-id="${escapeHtml(t.id)}">
+                ${teamBadgeHtml(t, false)}
+                <div class="team-list-meta">
+                    <span class="team-list-name">${escapeHtml(t.name)}</span>
+                    ${t.description ? `<span class="team-list-desc">${escapeHtml(t.description)}</span>` : ""}
+                    <div class="team-list-foot">
+                        <div class="team-member-bubbles">${bubbles}</div>
+                        <span class="team-list-count">${t.memberCount} member${t.memberCount === 1 ? "" : "s"} · ${t.projectCount} project${t.projectCount === 1 ? "" : "s"}</span>
+                    </div>
+                </div>
+            </div>
+        `;
+    }).join("");
+    return `
+        <div class="team-list-search">
+            <input type="search" placeholder="Search teams…" value="${escapeHtml(state.teamMgmt.search)}" id="teamSearchInput">
+        </div>
+        <div class="team-list-items">
+            ${items || `<div style="padding:16px;color:var(--muted);font-size:0.88rem">No teams found.</div>`}
+        </div>
+    `;
+}
+
+function renderTeamDetailHtml() {
+    const team = state.teamMgmt.selectedTeam;
+    if (!team) {
+        return `
+            <div class="team-detail-empty">
+                <h3>Select a team to view details</h3>
+                <p>Or click <strong>+ New team</strong> to create one.</p>
+            </div>
+        `;
+    }
+    const renaming = state.teamMgmt.renaming;
+    const nameHtml = renaming
+        ? `<input class="team-rename-input" id="teamRenameInput" value="${escapeHtml(team.name)}" type="text">`
+        : `<h2>${escapeHtml(team.name)}</h2>`;
+    const editingProjects = state.teamMgmt.editingProjects;
+    const projectsHtml = editingProjects
+        ? renderEditProjectsHtml(team)
+        : ((team.projects || []).length
+            ? `<div class="project-chips">${(team.projects || []).map((p) => `
+                <span class="project-chip">
+                    <span class="project-chip-badge">${escapeHtml(p.badge)}</span>
+                    ${escapeHtml(p.name)}
+                </span>`).join("")}</div>`
+            : `<span style="color:var(--muted);font-size:0.88rem">No projects assigned.</span>`);
+
+    const changingLead = state.teamMgmt.changingLead;
+    const leadHtml = changingLead
+        ? renderChangeLeadHtml(team)
+        : (team.leadUser
+            ? `<div class="team-lead-card">
+                ${userAvatarHtml(team.leadUser, 40)}
+                <div class="team-lead-info">
+                    <div class="team-lead-name">${escapeHtml(team.leadUser.name)}</div>
+                    <div class="team-lead-title">${escapeHtml(team.leadUser.role || "Lead")}</div>
+                    <div class="team-lead-email">${escapeHtml(team.leadUser.email || "")}</div>
+                </div>
+                <button class="btn-yellow" id="changeLeadBtn" type="button">Change lead</button>
+              </div>`
+            : `<div class="team-lead-empty">No lead assigned. <button class="btn-yellow" id="changeLeadBtn" type="button">Assign lead</button></div>`);
+
+    const membersRows = (team.members || []).map((m) => `
+        <tr>
+            <td>
+                <div class="member-name-cell">
+                    ${userAvatarHtml(m, 32)}
+                    <div>
+                        <div class="member-name-text">${escapeHtml(m.name)}</div>
+                        <div class="member-email-text">${escapeHtml(m.email || "")}</div>
+                    </div>
+                </div>
+            </td>
+            <td>${escapeHtml(m.role || "member")}</td>
+            <td><span class="position-chip ${m.position === "Lead" ? "position-chip-lead" : "position-chip-member"}">${escapeHtml(m.position)}</span></td>
+            <td><button class="table-action-btn danger" data-remove-member="${m.id}" type="button">Remove</button></td>
+        </tr>
+    `).join("");
+    return `
+        <div class="team-detail-header">
+            ${teamBadgeHtml(team, false)}
+            <div class="team-detail-header-main">
+                ${nameHtml}
+                <div class="team-detail-header-meta">
+                    <span class="team-id-chip">team_id: ${escapeHtml(team.id)}</span>
+                    <span>Updated ${escapeHtml(team.updatedAt ? team.updatedAt.split("T")[0] : "—")}</span>
+                    <span>${(team.members || []).length} member${(team.members || []).length === 1 ? "" : "s"}</span>
+                    <span>${(team.projects || []).length} project${(team.projects || []).length === 1 ? "" : "s"}</span>
+                </div>
+            </div>
+            <div class="team-detail-header-actions">
+                ${renaming
+                    ? `<button class="btn-primary" id="saveRenameBtn" type="button">Save</button>
+                       <button class="secondary-button" id="cancelRenameBtn" type="button">Cancel</button>`
+                    : `<button class="secondary-button" id="renameTeamBtn" type="button">Rename</button>
+                       <button class="secondary-button danger-button" id="deleteTeamBtn" type="button">Delete</button>`
+                }
+            </div>
+        </div>
+        ${team.description ? `<div class="team-section"><p class="team-section-desc">${escapeHtml(team.description)}</p></div>` : ""}
+        <div class="team-section">
+            <div class="team-section-head">
+                <span class="team-section-title">OWNING PROJECTS ${(team.projects || []).length}</span>
+                ${!editingProjects ? `<button class="secondary-button team-section-action" id="editProjectsBtn" type="button">Edit projects</button>` : ""}
+            </div>
+            ${projectsHtml}
+        </div>
+        <div class="team-section">
+            <div class="team-section-title">TEAM LEAD</div>
+            ${leadHtml}
+        </div>
+        <div class="team-section">
+            <div class="team-section-head">
+                <span class="team-section-title">MEMBERS ${(team.members || []).length}</span>
+                <button class="secondary-button team-section-action" id="addMemberBtn" type="button">+ Add member</button>
+            </div>
+            ${membersRows
+                ? `<table class="members-table">
+                    <thead><tr><th>NAME</th><th>ROLE</th><th>POSITION</th><th></th></tr></thead>
+                    <tbody>${membersRows}</tbody>
+                   </table>`
+                : `<span style="color:var(--muted);font-size:0.88rem">No members yet.</span>`
+            }
+        </div>
+    `;
+}
+
+function bindTeamListEvents() {
+    const searchInput = document.getElementById("teamSearchInput");
+    if (searchInput) {
+        searchInput.addEventListener("input", () => {
+            state.teamMgmt.search = searchInput.value;
+            renderTeamMgmt();
+        });
+    }
+    document.querySelectorAll("[data-team-id]").forEach((el) => {
+        el.addEventListener("click", () => selectTeam(el.dataset.teamId));
+    });
+}
+
+async function selectTeam(teamId) {
+    state.teamMgmt.selectedTeamId = teamId;
+    state.teamMgmt.selectedTeam = null;
+    state.teamMgmt.renaming = false;
+    state.teamMgmt.changingLead = false;
+    state.teamMgmt.editingProjects = false;
+    state.teamMgmt.pendingProjectIds = null;
+    state.teamMgmt.projectSearch = "";
+    renderTeamMgmt();
+    try {
+        const payload = await apiJson(`/api/teams/${teamId}`);
+        state.teamMgmt.selectedTeam = payload.team;
+    } catch (err) {
+        state.teamMgmt.selectedTeam = null;
+    }
+    renderTeamMgmt();
+}
+
+function bindTeamDetailEvents() {
+    const renameBtn = document.getElementById("renameTeamBtn");
+    if (renameBtn) {
+        renameBtn.addEventListener("click", () => {
+            state.teamMgmt.renaming = true;
+            renderTeamMgmt();
+            document.getElementById("teamRenameInput")?.focus();
+        });
+    }
+    const saveRenameBtn = document.getElementById("saveRenameBtn");
+    if (saveRenameBtn) {
+        saveRenameBtn.addEventListener("click", async () => {
+            const input = document.getElementById("teamRenameInput");
+            const newName = input?.value.trim();
+            if (!newName || !state.teamMgmt.selectedTeamId) return;
+            try {
+                const payload = await apiJson(`/api/teams/${state.teamMgmt.selectedTeamId}`, {
+                    method: "PATCH",
+                    body: { name: newName }
+                });
+                state.teamMgmt.selectedTeam = payload.team;
+                state.teamMgmt.renaming = false;
+                await loadTeamMgmt();
+            } catch (err) {
+                alert(err.message || "Failed to rename team.");
+            }
+        });
+    }
+    const cancelRenameBtn = document.getElementById("cancelRenameBtn");
+    if (cancelRenameBtn) {
+        cancelRenameBtn.addEventListener("click", () => {
+            state.teamMgmt.renaming = false;
+            renderTeamMgmt();
+        });
+    }
+    const deleteBtn = document.getElementById("deleteTeamBtn");
+    if (deleteBtn) {
+        deleteBtn.addEventListener("click", async () => {
+            const team = state.teamMgmt.selectedTeam;
+            if (!team) return;
+            if (!confirm(`Delete team "${team.name}"? This cannot be undone.`)) return;
+            try {
+                await apiJson(`/api/teams/${team.id}`, { method: "DELETE" });
+                state.teamMgmt.selectedTeamId = null;
+                state.teamMgmt.selectedTeam = null;
+                await loadTeamMgmt();
+            } catch (err) {
+                alert(err.message || "Failed to delete team.");
+            }
+        });
+    }
+    // Change lead
+    const changeLeadBtn = document.getElementById("changeLeadBtn");
+    if (changeLeadBtn) {
+        changeLeadBtn.addEventListener("click", () => {
+            state.teamMgmt.changingLead = true;
+            renderTeamMgmt();
+        });
+    }
+    const saveLeadBtn = document.getElementById("saveLeadBtn");
+    if (saveLeadBtn) {
+        saveLeadBtn.addEventListener("click", async () => {
+            const sel = document.getElementById("changeLeadSelect");
+            const uid = sel ? Number(sel.value) : null;
+            if (!uid || !state.teamMgmt.selectedTeamId) return;
+            try {
+                const payload = await apiJson(`/api/teams/${state.teamMgmt.selectedTeamId}/lead`, {
+                    method: "POST", body: { userId: uid }
+                });
+                state.teamMgmt.selectedTeam = payload.team;
+                state.teamMgmt.changingLead = false;
+                renderTeamMgmt();
+            } catch (err) { alert(err.message || "Failed."); }
+        });
+    }
+    const cancelChangeLeadBtn = document.getElementById("cancelChangeLeadBtn");
+    if (cancelChangeLeadBtn) {
+        cancelChangeLeadBtn.addEventListener("click", () => {
+            state.teamMgmt.changingLead = false;
+            renderTeamMgmt();
+        });
+    }
+
+    // Edit projects
+    const editProjectsBtn = document.getElementById("editProjectsBtn");
+    if (editProjectsBtn) {
+        editProjectsBtn.addEventListener("click", () => {
+            const team = state.teamMgmt.selectedTeam;
+            state.teamMgmt.pendingProjectIds = (team?.projects || []).map((p) => p.id);
+            state.teamMgmt.editingProjects = true;
+            state.teamMgmt.projectSearch = "";
+            renderTeamMgmt();
+        });
+    }
+    document.querySelectorAll("[data-proj-pick]").forEach((cb) => {
+        cb.addEventListener("change", () => {
+            const pid = Number(cb.value);
+            if (!state.teamMgmt.pendingProjectIds) state.teamMgmt.pendingProjectIds = [];
+            if (cb.checked) {
+                if (!state.teamMgmt.pendingProjectIds.includes(pid)) state.teamMgmt.pendingProjectIds.push(pid);
+            } else {
+                state.teamMgmt.pendingProjectIds = state.teamMgmt.pendingProjectIds.filter((id) => id !== pid);
+            }
+        });
+    });
+    const projectSearchInput = document.getElementById("projectSearchInput");
+    if (projectSearchInput) {
+        projectSearchInput.addEventListener("input", () => {
+            state.teamMgmt.projectSearch = projectSearchInput.value;
+            // re-render just the project list without losing checked state
+            const editPanel = projectSearchInput.closest(".team-section")?.querySelector(".edit-projects-list");
+            if (editPanel) {
+                const team = state.teamMgmt.selectedTeam;
+                const q = state.teamMgmt.projectSearch.toLowerCase();
+                const filtered = q
+                    ? state.teamMgmt.allProjects.filter((p) => p.name.toLowerCase().includes(q))
+                    : state.teamMgmt.allProjects;
+                const pending = state.teamMgmt.pendingProjectIds || [];
+                editPanel.innerHTML = filtered.map((p) => {
+                    const checked = pending.includes(p.id) ? "checked" : "";
+                    return `<label class="wizard-check-row compact-check-row">
+                        <input type="checkbox" value="${p.id}" ${checked} data-proj-pick="${p.id}">
+                        <span>${escapeHtml(p.name)}</span>
+                    </label>`;
+                }).join("") || `<span style="color:var(--muted);font-size:0.88rem">No projects found.</span>`;
+                editPanel.querySelectorAll("[data-proj-pick]").forEach((cb) => {
+                    cb.addEventListener("change", () => {
+                        const pid = Number(cb.value);
+                        if (!state.teamMgmt.pendingProjectIds) state.teamMgmt.pendingProjectIds = [];
+                        if (cb.checked) {
+                            if (!state.teamMgmt.pendingProjectIds.includes(pid)) state.teamMgmt.pendingProjectIds.push(pid);
+                        } else {
+                            state.teamMgmt.pendingProjectIds = state.teamMgmt.pendingProjectIds.filter((id) => id !== pid);
+                        }
+                    });
+                });
+            }
+        });
+    }
+    const saveProjectsBtn = document.getElementById("saveProjectsBtn");
+    if (saveProjectsBtn) {
+        saveProjectsBtn.addEventListener("click", async () => {
+            const ids = state.teamMgmt.pendingProjectIds || [];
+            try {
+                const payload = await apiJson(`/api/teams/${state.teamMgmt.selectedTeamId}/projects`, {
+                    method: "PATCH", body: { projectIds: ids }
+                });
+                state.teamMgmt.selectedTeam = payload.team;
+                state.teamMgmt.editingProjects = false;
+                state.teamMgmt.pendingProjectIds = null;
+                await loadTeamMgmt();
+            } catch (err) { alert(err.message || "Failed to save projects."); }
+        });
+    }
+    const cancelProjectsBtn = document.getElementById("cancelProjectsBtn");
+    if (cancelProjectsBtn) {
+        cancelProjectsBtn.addEventListener("click", () => {
+            state.teamMgmt.editingProjects = false;
+            state.teamMgmt.pendingProjectIds = null;
+            state.teamMgmt.projectSearch = "";
+            renderTeamMgmt();
+        });
+    }
+
+    // Add member
+    const addMemberBtn = document.getElementById("addMemberBtn");
+    if (addMemberBtn) {
+        addMemberBtn.addEventListener("click", () => openAddMemberPanel());
+    }
+
+    document.querySelectorAll("[data-remove-member]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+            const userId = btn.dataset.removeMember;
+            if (!state.teamMgmt.selectedTeamId) return;
+            if (!confirm("Remove this member from the team?")) return;
+            try {
+                const payload = await apiJson(`/api/teams/${state.teamMgmt.selectedTeamId}/members/${userId}`, { method: "DELETE" });
+                state.teamMgmt.selectedTeam = payload.team;
+                renderTeamMgmt();
+            } catch (err) {
+                alert(err.message || "Failed to remove member.");
+            }
+        });
+    });
+}
+
+function openAddMemberPanel() {
+    const team = state.teamMgmt.selectedTeam;
+    if (!team) return;
+    const memberIds = new Set((team.members || []).map((m) => m.id));
+    const eligible = state.teamMgmt.allUsers.filter((u) => !memberIds.has(u.id));
+    if (!eligible.length) { alert("All users are already members of this team."); return; }
+    const options = eligible.map((u) =>
+        `<option value="${u.id}">${escapeHtml(u.name)}${u.email ? ` (${u.email})` : ""}</option>`
+    ).join("");
+    // Show a simple inline select — rendered in a micro-panel appended to detail
+    const panel = document.createElement("div");
+    panel.className = "add-member-inline";
+    panel.innerHTML = `
+        <select id="addMemberSelect" style="min-height:36px;border:1px solid var(--line);border-radius:var(--radius);padding:4px 8px;font:inherit">${options}</select>
+        <button class="btn-primary" id="confirmAddMember" type="button">Add</button>
+        <button class="secondary-button" id="cancelAddMember" type="button">Cancel</button>
+    `;
+    const membersSection = document.querySelector(".team-section:last-child");
+    if (membersSection) membersSection.appendChild(panel);
+    panel.querySelector("#cancelAddMember").addEventListener("click", () => panel.remove());
+    panel.querySelector("#confirmAddMember").addEventListener("click", async () => {
+        const sel = panel.querySelector("#addMemberSelect");
+        const uid = Number(sel?.value);
+        if (!uid) return;
+        try {
+            const payload = await apiJson(`/api/teams/${team.id}/members`, { method: "POST", body: { userId: uid } });
+            state.teamMgmt.selectedTeam = payload.team;
+            renderTeamMgmt();
+        } catch (err) { alert(err.message || "Failed to add member."); }
+    });
+}
+
+function renderChangeLeadHtml(team) {
+    const members = team.members || [];
+    if (!members.length) {
+        return `<p style="color:var(--muted);font-size:0.88rem">Add members first before assigning a lead.
+            <button class="secondary-button" id="cancelChangeLeadBtn" type="button" style="margin-left:8px">Cancel</button></p>`;
+    }
+    const options = members.map((m) =>
+        `<option value="${m.id}" ${team.leadUser && team.leadUser.id === m.id ? "selected" : ""}>${escapeHtml(m.name)}</option>`
+    ).join("");
+    return `
+        <div class="change-lead-row">
+            <select class="change-lead-select" id="changeLeadSelect">${options}</select>
+            <button class="btn-primary" id="saveLeadBtn" type="button">Save lead</button>
+            <button class="secondary-button" id="cancelChangeLeadBtn" type="button">Cancel</button>
+        </div>
+    `;
+}
+
+function renderEditProjectsHtml(team) {
+    const allProjects = state.teamMgmt.allProjects;
+    const assignedIds = new Set((team.projects || []).map((p) => p.id));
+    const pending = state.teamMgmt.pendingProjectIds || [...assignedIds];
+    const q = (state.teamMgmt.projectSearch || "").toLowerCase();
+    const filtered = q ? allProjects.filter((p) => p.name.toLowerCase().includes(q)) : allProjects;
+    const rows = filtered.map((p) => {
+        const checked = pending.includes(p.id) ? "checked" : "";
+        return `<label class="wizard-check-row compact-check-row">
+            <input type="checkbox" value="${p.id}" ${checked} data-proj-pick="${p.id}">
+            <span>${escapeHtml(p.name)}</span>
+        </label>`;
+    }).join("");
+    return `
+        <input class="wizard-search" id="projectSearchInput" type="search" placeholder="Search projects…" value="${escapeHtml(state.teamMgmt.projectSearch)}">
+        <div class="edit-projects-list">${rows || `<span style="color:var(--muted);font-size:0.88rem">No projects found.</span>`}</div>
+        <div class="edit-projects-actions">
+            <button class="btn-primary" id="saveProjectsBtn" type="button">Save</button>
+            <button class="secondary-button" id="cancelProjectsBtn" type="button">Cancel</button>
+        </div>
+    `;
+}
+
+// ─── Wizard ───────────────────────────────────────────────────────────
+
+function startNewTeamWizard() {
+    state.teamMgmt.wizard = {
+        step: 1,
+        name: "",
+        shortCode: "",
+        color: "#818cf8",
+        description: "",
+        selectedProjectIds: [],
+        selectedMemberIds: [],
+        leadUserId: null,
+        saving: false,
+        errors: {},
+        memberSearch: "",
+    };
+    renderTeamMgmt();
+}
+
+function renderTeamWizardHtml() {
+    const w = state.teamMgmt.wizard;
+    const sidebarItems = WIZARD_STEPS.map((s) => {
+        const cls = s.num === w.step ? "is-active" : s.num < w.step ? "is-done" : "";
+        return `<div class="wizard-step-item ${cls}">
+            <span class="wizard-step-num">${s.num < w.step ? "✓" : s.num}</span>
+            <span>${s.label}</span>
+        </div>`;
+    }).join("");
+    const stepHtml = renderWizardStepContent(w);
+    const backLabel = w.step > 1 ? "← Back" : "Cancel";
+    const nextLabel = w.step < 5 ? "Continue →" : (w.saving ? "Creating…" : "Create team");
+    return `
+        <div class="wizard-shell">
+            <div class="wizard-sidebar">
+                <div class="wizard-sidebar-title">Create team</div>
+                ${sidebarItems}
+            </div>
+            <div class="wizard-content" id="wizardContent">
+                ${stepHtml}
+            </div>
+            <div class="wizard-footer">
+                <button class="secondary-button" id="wizardBackBtn" type="button">${escapeHtml(backLabel)}</button>
+                <button class="btn-primary" id="wizardNextBtn" type="button" ${w.saving ? "disabled" : ""}>${escapeHtml(nextLabel)}</button>
+            </div>
+        </div>
+    `;
+}
+
+function renderWizardStepContent(w) {
+    if (w.step === 1) {
+        const colorSwatches = WIZARD_COLORS.map((c) => `
+            <span class="color-swatch ${c === w.color ? "is-selected" : ""}"
+                  style="background:${escapeHtml(c)}"
+                  data-color="${escapeHtml(c)}"
+                  title="${escapeHtml(c)}"></span>
+        `).join("");
+        return `
+            <div class="wizard-step-title">Team details</div>
+            <p class="wizard-step-sub">Give your team a name, short code and color.</p>
+            <div class="wizard-field">
+                <label for="wizardName">Team name *</label>
+                <input id="wizardName" type="text" value="${escapeHtml(w.name)}" placeholder="e.g. Infrastructure">
+                ${w.errors.name ? `<span class="period-error">${escapeHtml(w.errors.name)}</span>` : ""}
+            </div>
+            <div class="wizard-field">
+                <label for="wizardShortCode">Short code (max 5 chars)</label>
+                <input id="wizardShortCode" type="text" maxlength="5" value="${escapeHtml(w.shortCode)}" placeholder="e.g. INFRA">
+                <span class="wizard-field-hint">Auto-derived from name. Becomes the team ID.</span>
+            </div>
+            <div class="wizard-field">
+                <label>Color</label>
+                <div class="color-picker-row">${colorSwatches}</div>
+            </div>
+            <div class="wizard-field">
+                <label for="wizardDesc">Description (optional)</label>
+                <textarea id="wizardDesc" rows="3" placeholder="What does this team own?">${escapeHtml(w.description)}</textarea>
+            </div>
+        `;
+    }
+    if (w.step === 2) {
+        const projects = state.teamMgmt.allProjects;
+        const rows = projects.map((p) => {
+            const checked = w.selectedProjectIds.includes(p.id) ? "checked" : "";
+            return `<label class="wizard-check-row">
+                <input type="checkbox" value="${p.id}" ${checked} data-proj-id="${p.id}">
+                <span>${escapeHtml(p.name)}</span>
+            </label>`;
+        }).join("");
+        return `
+            <div class="wizard-step-title">Owning projects</div>
+            <p class="wizard-step-sub">Select projects this team will own. You can change this later.</p>
+            <div class="wizard-check-list">
+                ${rows || `<span style="color:var(--muted)">No projects available.</span>`}
+            </div>
+        `;
+    }
+    if (w.step === 3) {
+        const query = w.memberSearch.toLowerCase();
+        const users = state.teamMgmt.allUsers.filter((u) =>
+            !query || u.name.toLowerCase().includes(query) || (u.email || "").toLowerCase().includes(query)
+        );
+        const rows = users.map((u) => {
+            const checked = w.selectedMemberIds.includes(u.id) ? "checked" : "";
+            return `<label class="wizard-check-row">
+                <input type="checkbox" value="${u.id}" ${checked} data-member-id="${u.id}">
+                ${userAvatarHtml(u, 28)}
+                <span>${escapeHtml(u.name)}${u.email ? `<span style="color:var(--muted);font-size:0.78rem;display:block">${escapeHtml(u.email)}</span>` : ""}</span>
+            </label>`;
+        }).join("");
+        return `
+            <div class="wizard-step-title">Add members</div>
+            <p class="wizard-step-sub">Choose who belongs to this team.</p>
+            <input class="wizard-search" type="search" id="wizardMemberSearch" placeholder="Search users…" value="${escapeHtml(w.memberSearch)}">
+            <div class="wizard-check-list">${rows || `<span style="color:var(--muted)">No users found.</span>`}</div>
+        `;
+    }
+    if (w.step === 4) {
+        const eligibleLeads = state.teamMgmt.allUsers.filter((u) =>
+            w.selectedMemberIds.includes(u.id) && (u.role === "lead" || u.role === "manager" || u.role === "admin")
+        );
+        if (!eligibleLeads.length) {
+            return `
+                <div class="wizard-step-title">Assign lead</div>
+                <p class="wizard-step-sub">No lead-role members selected.</p>
+                <div class="wizard-lead-empty">
+                    None of the selected members have the <strong>lead</strong> role. Go back and include at least one user with the lead, manager, or admin role.
+                </div>
+            `;
+        }
+        const rows = eligibleLeads.map((u) => {
+            const checked = w.leadUserId === u.id ? "checked" : "";
+            return `<label class="wizard-check-row">
+                <input type="radio" name="wizardLead" value="${u.id}" ${checked} data-lead-id="${u.id}">
+                ${userAvatarHtml(u, 28)}
+                <div>
+                    <span>${escapeHtml(u.name)}</span>
+                    <span class="wizard-lead-role-tag">${escapeHtml(u.role)}</span>
+                </div>
+            </label>`;
+        }).join("");
+        return `
+            <div class="wizard-step-title">Assign lead</div>
+            <p class="wizard-step-sub">Pick the team lead from the selected members.</p>
+            <div class="wizard-check-list">${rows}</div>
+            ${w.errors?.lead ? `<div class="wizard-error">${escapeHtml(w.errors.lead)}</div>` : ""}
+        `;
+    }
+    if (w.step === 5) {
+        const selectedProjects = state.teamMgmt.allProjects.filter((p) => w.selectedProjectIds.includes(p.id));
+        const selectedMembers = state.teamMgmt.allUsers.filter((u) => w.selectedMemberIds.includes(u.id));
+        const leadUser = state.teamMgmt.allUsers.find((u) => u.id === w.leadUserId);
+        const previewColor = w.color || "#818cf8";
+        return `
+            <div class="wizard-step-title">Review</div>
+            <p class="wizard-step-sub">Confirm your new team before creating it.</p>
+            <div class="wizard-review-grid">
+                <div class="wizard-review-row">
+                    <span class="wizard-review-label">Name</span>
+                    <span class="wizard-review-value">${escapeHtml(w.name || "—")}</span>
+                </div>
+                <div class="wizard-review-row">
+                    <span class="wizard-review-label">Short code</span>
+                    <span class="wizard-review-value">${escapeHtml(w.shortCode || "—")}</span>
+                </div>
+                <div class="wizard-review-row">
+                    <span class="wizard-review-label">Color</span>
+                    <span class="wizard-review-value"><span class="color-swatch" style="background:${escapeHtml(previewColor)};width:20px;height:20px;border-radius:5px;display:inline-block"></span></span>
+                </div>
+                ${w.description ? `<div class="wizard-review-row">
+                    <span class="wizard-review-label">Description</span>
+                    <span class="wizard-review-value">${escapeHtml(w.description)}</span>
+                </div>` : ""}
+                <div class="wizard-review-row">
+                    <span class="wizard-review-label">Projects</span>
+                    <span class="wizard-review-value">${selectedProjects.length ? selectedProjects.map((p) => escapeHtml(p.name)).join(", ") : "None"}</span>
+                </div>
+                <div class="wizard-review-row">
+                    <span class="wizard-review-label">Members</span>
+                    <span class="wizard-review-value">${selectedMembers.length ? selectedMembers.map((u) => escapeHtml(u.name)).join(", ") : "None"}</span>
+                </div>
+                <div class="wizard-review-row">
+                    <span class="wizard-review-label">Lead</span>
+                    <span class="wizard-review-value">${leadUser ? escapeHtml(leadUser.name) : "None"}</span>
+                </div>
+            </div>
+            ${w.errors.save ? `<div style="margin-top:12px;color:var(--attention);font-weight:700">${escapeHtml(w.errors.save)}</div>` : ""}
+        `;
+    }
+    return "";
+}
+
+function bindWizardEvents() {
+    const w = state.teamMgmt.wizard;
+    if (!w) return;
+    const backBtn = document.getElementById("wizardBackBtn");
+    const nextBtn = document.getElementById("wizardNextBtn");
+    if (backBtn) {
+        backBtn.addEventListener("click", () => {
+            if (w.step > 1) {
+                w.step -= 1;
+                renderTeamMgmt();
+            } else {
+                state.teamMgmt.wizard = null;
+                renderTeamMgmt();
+            }
+        });
+    }
+    if (nextBtn) {
+        nextBtn.addEventListener("click", () => nextWizardStep());
+    }
+    // Step-specific bindings
+    if (w.step === 1) {
+        const nameInput = document.getElementById("wizardName");
+        const codeInput = document.getElementById("wizardShortCode");
+        const descInput = document.getElementById("wizardDesc");
+        if (nameInput) {
+            nameInput.addEventListener("input", () => {
+                w.name = nameInput.value;
+                if (!w._codeManuallyEdited) {
+                    w.shortCode = nameInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5);
+                    if (codeInput) codeInput.value = w.shortCode;
+                }
+            });
+        }
+        if (codeInput) {
+            codeInput.addEventListener("input", () => {
+                w._codeManuallyEdited = true;
+                w.shortCode = codeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5);
+                codeInput.value = w.shortCode;
+            });
+        }
+        if (descInput) {
+            descInput.addEventListener("input", () => { w.description = descInput.value; });
+        }
+        document.querySelectorAll("[data-color]").forEach((swatch) => {
+            swatch.addEventListener("click", () => {
+                w.color = swatch.dataset.color;
+                document.querySelectorAll("[data-color]").forEach((s) => s.classList.toggle("is-selected", s.dataset.color === w.color));
+            });
+        });
+    }
+    if (w.step === 2) {
+        document.querySelectorAll("[data-proj-id]").forEach((cb) => {
+            cb.addEventListener("change", () => {
+                const pid = Number(cb.value);
+                if (cb.checked) {
+                    if (!w.selectedProjectIds.includes(pid)) w.selectedProjectIds.push(pid);
+                } else {
+                    w.selectedProjectIds = w.selectedProjectIds.filter((id) => id !== pid);
+                }
+            });
+        });
+    }
+    if (w.step === 3) {
+        const bindMemberCheckboxes = () => {
+            document.querySelectorAll("[data-member-id]").forEach((cb) => {
+                cb.addEventListener("change", () => {
+                    const uid = Number(cb.value);
+                    if (cb.checked) {
+                        if (!w.selectedMemberIds.includes(uid)) w.selectedMemberIds.push(uid);
+                    } else {
+                        w.selectedMemberIds = w.selectedMemberIds.filter((id) => id !== uid);
+                        if (w.leadUserId === uid) w.leadUserId = null;
+                    }
+                });
+            });
+        };
+        bindMemberCheckboxes();
+        const searchInput = document.getElementById("wizardMemberSearch");
+        if (searchInput) {
+            searchInput.addEventListener("input", () => {
+                w.memberSearch = searchInput.value;
+                const list = document.querySelector("#wizardContent .wizard-check-list");
+                if (!list) return;
+                const q = w.memberSearch.toLowerCase();
+                const filtered = state.teamMgmt.allUsers.filter((u) =>
+                    !q || u.name.toLowerCase().includes(q) || (u.email || "").toLowerCase().includes(q)
+                );
+                list.innerHTML = filtered.map((u) => {
+                    const checked = w.selectedMemberIds.includes(u.id) ? "checked" : "";
+                    return `<label class="wizard-check-row">
+                        <input type="checkbox" value="${u.id}" ${checked} data-member-id="${u.id}">
+                        ${userAvatarHtml(u, 28)}
+                        <span>${escapeHtml(u.name)}${u.email ? `<span style="color:var(--muted);font-size:0.78rem;display:block">${escapeHtml(u.email)}</span>` : ""}</span>
+                    </label>`;
+                }).join("") || `<span style="color:var(--muted)">No users found.</span>`;
+                bindMemberCheckboxes();
+            });
+        }
+    }
+    if (w.step === 4) {
+        document.querySelectorAll("[data-lead-id]").forEach((rb) => {
+            rb.addEventListener("change", () => {
+                w.leadUserId = Number(rb.value);
+            });
+        });
+    }
+}
+
+async function nextWizardStep() {
+    const w = state.teamMgmt.wizard;
+    if (!w) return;
+    w.errors = {};
+    if (w.step === 1) {
+        if (!w.name.trim()) { w.errors.name = "Team name is required."; renderTeamMgmt(); return; }
+    }
+    if (w.step === 4) {
+        if (!w.leadUserId) { w.errors.lead = "Please select a team lead before continuing."; renderTeamMgmt(); return; }
+    }
+    if (w.step < 5) {
+        w.step += 1;
+        renderTeamMgmt();
+        return;
+    }
+    // Step 5: create team
+    w.saving = true;
+    renderTeamMgmt();
+    try {
+        const payload = await apiJson("/api/teams", {
+            method: "POST",
+            body: {
+                name: w.name.trim(),
+                id: w.shortCode.toLowerCase() || undefined,
+                color: w.color,
+                description: w.description,
+                memberIds: w.selectedMemberIds,
+                leadUserId: w.leadUserId,
+                projectIds: w.selectedProjectIds,
+            }
+        });
+        state.teamMgmt.wizard = null;
+        state.teamMgmt.selectedTeamId = payload.team.id;
+        state.teamMgmt.selectedTeam = payload.team;
+        await loadTeamMgmt();
+    } catch (err) {
+        w.saving = false;
+        w.errors.save = err.message || "Failed to create team.";
+        renderTeamMgmt();
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+
+function addDraftTeam() {
+    // legacy stub — new teams are created via wizard
 }
 
 function renderTeamSettings() {
-    validateTeamDraft();
-    els.teamSettingsList.innerHTML = state.teamDraft.teams.length
-        ? state.teamDraft.teams.map(renderTeamSettingsItem).join("")
-        : `<div class="empty-mini">No teams configured yet. Add a team to assign users.</div>${renderAllUsersPreview()}`;
-
-    els.teamSettingsList.querySelectorAll("[data-team-search]").forEach((input) => {
-        input.addEventListener("input", () => updateDraftTeamSearch(input.dataset.teamSearch, input.value));
-    });
-    els.teamSettingsList.querySelectorAll("[data-expand-team-members]").forEach((button) => {
-        button.addEventListener("click", () => toggleDraftTeamMemberList(button.dataset.expandTeamMembers));
-    });
-    els.teamSettingsList.querySelectorAll("[data-team-name]").forEach((input) => {
-        input.addEventListener("input", () => updateDraftTeamName(input.dataset.teamName, input.value));
-        input.addEventListener("focus", () => openDraftTeam(input.dataset.teamName));
-    });
-    els.teamSettingsList.querySelectorAll("[data-open-team]").forEach((button) => {
-        button.addEventListener("click", () => openDraftTeam(button.dataset.openTeam));
-    });
-    els.teamSettingsList.querySelectorAll("[data-remove-team]").forEach((button) => {
-        button.addEventListener("click", () => removeDraftTeam(button.dataset.removeTeam));
-    });
-    els.teamSettingsList.querySelectorAll("[data-team-member]").forEach((input) => {
-        input.addEventListener("change", () => toggleDraftTeamMember(input.dataset.teamMember, Number(input.value), input.checked));
-    });
-
-    els.teamConfigJson.value = JSON.stringify({ teams: state.teamDraft.teams }, null, 4);
-    syncJsonTeamClicks();
-    els.settingsError.textContent = state.teamDraft.errors.join(" ");
-    els.settingsError.classList.toggle("is-hidden", state.teamDraft.errors.length === 0);
+    // legacy stub — new UI is rendered by renderTeamMgmt()
 }
 
 function renderAllUsersPreview() {
@@ -1128,16 +1977,7 @@ function toggleDraftTeamMemberList(teamId) {
     renderTeamSettings();
 }
 
-function syncJsonTeamClicks() {
-    els.teamConfigJson.onclick = (event) => {
-        const index = teamIndexFromTextareaClick(event);
-        if (index < 0 || !state.teamDraft.teams[index]) {
-            return;
-        }
-        state.teamDraft.openTeamId = state.teamDraft.teams[index].id;
-        renderTeamSettings();
-    };
-}
+function syncJsonTeamClicks() { /* legacy stub */ }
 
 function teamIndexFromTextareaClick(event) {
     const textarea = event.currentTarget;
@@ -1187,30 +2027,8 @@ function toggleDraftTeamMember(teamId, memberId, checked) {
 }
 
 async function saveTeamConfigToFile() {
-    if (!validateTeamDraft()) {
-        renderTeamSettings();
-        return;
-    }
-    const payload = { teams: state.teamDraft.teams };
-    els.saveTeamsButton.disabled = true;
-    els.saveTeamsButton.textContent = "Saving";
-    try {
-        const saved = await postJson("/team-config.json", payload);
-        state.teams = validateTeams(saved.teams || payload.teams, state.users);
-        state.teamDraft = createTeamDraft(state.teams);
-        syncWorkControls();
-        renderTeamSettings();
-        setSettingsMessage("Saved to team-config.local.json.");
-        if (state.view === "work-overview") {
-            await refreshWorkOverview();
-        }
-    } catch (error) {
-        state.teamDraft.errors = [error.message || "Unable to save team config file."];
-        renderTeamSettings();
-    } finally {
-        els.saveTeamsButton.disabled = false;
-        els.saveTeamsButton.textContent = "Save teams";
-    }
+    // legacy stub — kept for backward compat with /team-config.json endpoint
+    // New UI uses createTeam() which calls POST /api/teams directly
 }
 
 async function postJson(path, payload) {
@@ -1244,11 +2062,7 @@ async function postJson(path, payload) {
     }
 }
 
-function setSettingsMessage(message) {
-    state.teamDraft.errors = [];
-    els.settingsError.textContent = message;
-    els.settingsError.classList.remove("is-hidden");
-}
+function setSettingsMessage(_message) { /* legacy stub */ }
 
 function validateTeamDraft() {
     const errors = [];
@@ -1798,7 +2612,9 @@ function hasSuspiciousTiming(row) {
 function render() {
     renderViewShell();
     renderRefreshState();
-    if (state.view === "planner") {
+    if (state.view === "settings") {
+        // team mgmt renders itself once data is loaded via loadTeamMgmt / renderTeamMgmt
+    } else if (state.view === "planner") {
         renderPlanner();
     } else if (state.view === "work-overview") {
         renderWorkOverview();
@@ -1811,23 +2627,27 @@ function render() {
 }
 
 function renderViewShell() {
-    els.viewSelect.value = state.view;
+    const isSettings = state.view === "settings";
     const isWork = state.view === "work-overview";
     const isPlanner = state.view === "planner";
-    els.periodPanel.classList.toggle("is-hidden", isWork || isPlanner);
+
+    els.viewSelect.value = isSettings ? (state.previousView || "planner") : state.view;
+
+    els.periodPanel.classList.toggle("is-hidden", isWork || isPlanner || isSettings);
     els.workControls.classList.toggle("is-hidden", !isWork);
     els.plannerControls.classList.toggle("is-hidden", !isPlanner);
     els.addPlannerTaskButton.classList.toggle("is-hidden", !isPlanner);
 
     els.plannerUserChip.classList.toggle("is-hidden", !state.auth.user);
 
-    els.timeSummaryStrip.classList.toggle("is-hidden", isWork || isPlanner);
+    els.timeSummaryStrip.classList.toggle("is-hidden", isWork || isPlanner || isSettings);
     els.workSummaryStrip.classList.toggle("is-hidden", !isWork);
     els.plannerSummaryStrip.classList.toggle("is-hidden", !isPlanner);
-    els.board.classList.toggle("is-hidden", isWork || isPlanner);
+    els.board.classList.toggle("is-hidden", isWork || isPlanner || isSettings);
     els.workBoard.classList.toggle("is-hidden", !isWork);
     els.plannerBoard.classList.toggle("is-hidden", !isPlanner);
-    els.settingsPanel.classList.toggle("is-hidden", !isWork || !state.settingsOpen);
+    els.settingsPanel.classList.toggle("is-hidden", !isSettings);
+    els.noticeBar.classList.toggle("is-hidden", isSettings);
     renderPlannerUserChip();
     if (isPlanner) {
         syncPlannerControls();
@@ -1920,9 +2740,6 @@ function renderPlannerUserChip() {
     });
     document.getElementById("userMenuSettings").addEventListener("click", () => {
         document.getElementById("userMenu").classList.add("is-hidden");
-        state.view = "work-overview";
-        els.viewSelect.value = "work-overview";
-        render();
         openSettings();
     });
     document.getElementById("userMenuLogout").addEventListener("click", () => {

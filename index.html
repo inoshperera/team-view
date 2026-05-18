@@ -54,7 +54,7 @@
             </div>
         </header>
 
-        <div class="notice-bar">
+        <div class="notice-bar" id="noticeBar">
             <section class="notice is-hidden" id="globalNotice" aria-live="polite"></section>
             <button class="icon-refresh-button" id="refreshButton" type="button" title="Refresh" aria-label="Refresh">
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
@@ -132,35 +132,6 @@
             <div class="planner-toggle-row">
                 <button class="secondary-button is-selected" id="plannerGroupPriority" type="button">By priority</button>
                 <button class="secondary-button" id="plannerGroupCategory" type="button">By category</button>
-            </div>
-        </section>
-
-        <section class="settings-panel is-hidden" id="settingsPanel" aria-labelledby="settingsTitle">
-            <div class="detail-header">
-                <div>
-                    <p class="eyebrow">Local JSON config</p>
-                    <h2 id="settingsTitle">Team settings</h2>
-                </div>
-                <div class="settings-header-actions">
-                    <button class="secondary-button" id="saveTeamsButton" type="button">Save teams</button>
-                    <button class="secondary-button" id="closeSettingsButton" type="button">Close</button>
-                </div>
-            </div>
-            <div class="settings-grid">
-                <div>
-                    <div class="settings-actions">
-                        <input id="newTeamName" type="text" placeholder="New team name">
-                        <button class="secondary-button" id="addTeamButton" type="button">Add team</button>
-                    </div>
-                    <div class="team-settings-list" id="teamSettingsList"></div>
-                </div>
-                <div>
-                    <label class="field">
-                        <span>Config JSON</span>
-                        <textarea id="teamConfigJson" rows="16" readonly></textarea>
-                    </label>
-                    <div class="period-error is-hidden" id="settingsError" aria-live="polite"></div>
-                </div>
             </div>
         </section>
 
@@ -338,6 +309,24 @@
                     </div>
                 </div>
             </form>
+        </section>
+
+        <section class="settings-view is-hidden" id="settingsPanel" aria-labelledby="settingsTitle">
+            <div class="settings-view-inner">
+                <div class="settings-view-header">
+                    <div>
+                        <h1 id="settingsTitle">Manage existing teams</h1>
+                    </div>
+                    <div class="settings-header-actions">
+                        <span class="sync-badge" id="syncBadge">Synced with directory · 0 users</span>
+                        <button class="btn-primary" id="newTeamButton" type="button">+ New team</button>
+                        <button class="secondary-button" id="closeSettingsButton" type="button">← Back</button>
+                    </div>
+                </div>
+                <div class="team-mgmt-shell" id="teamMgmtShell">
+                    <!-- rendered by JS -->
+                </div>
+            </div>
         </section>
     </main>
 </body>

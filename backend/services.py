@@ -202,15 +202,47 @@ def list_teams(db, restrict_to=None):
         args = list(restrict_to)
     teams = db.query(
         f"""
-        SELECT t.*, COUNT(tm.user_id) AS memberCount
-        FROM teams t LEFT JOIN team_members tm ON tm.team_id=t.id
+        SELECT t.id, t.name, t.description, t.color, t.lead_user_id, t.updated_at,
+               COUNT(DISTINCT tm.user_id) AS memberCount,
+               COUNT(DISTINCT p.id) AS projectCount,
+               u.first_name AS lead_first, u.last_name AS lead_last,
+               u.avatar_color AS lead_color, u.avatar_url AS lead_url,
+               u.display_name AS lead_display, u.email AS lead_email
+        FROM teams t
+        LEFT JOIN team_members tm ON tm.team_id=t.id
+        LEFT JOIN projects p ON p.owner_team_id=t.id AND p.is_active=1
+        LEFT JOIN users u ON u.id=t.lead_user_id
         WHERE t.is_active=1{extra}
-        GROUP BY t.id
+        GROUP BY t.id, t.name, t.description, t.color, t.lead_user_id, t.updated_at,
+                 u.first_name, u.last_name, u.avatar_color, u.avatar_url, u.display_name, u.email
         ORDER BY t.name
         """,
         args,
     )
-    return [{"id": t["id"], "name": t["name"], "memberCount": t["memberCount"]} for t in teams]
+    result = []
+    for t in teams:
+        lead_user = None
+        if t.get("lead_user_id"):
+            lead_display = t.get("lead_display") or f"{t.get('lead_first', '')} {t.get('lead_last', '')}".strip()
+            lead_user = {
+                "id": t["lead_user_id"],
+                "name": lead_display,
+                "email": t.get("lead_email") or "",
+                "avatarColor": t.get("lead_color") or "",
+                "avatarUrl": t.get("lead_url") or "",
+                "initials": initials(lead_display),
+            }
+        result.append({
+            "id": t["id"],
+            "name": t["name"],
+            "description": t.get("description") or "",
+            "color": t.get("color") or "#818cf8",
+            "memberCount": t["memberCount"],
+            "projectCount": t["projectCount"],
+            "updatedAt": date_value(t.get("updated_at")),
+            "leadUser": lead_user,
+        })
+    return result
 
 
 def team_config_payload(db):
@@ -293,7 +325,158 @@ def get_team(db, team_id):
         """,
         (team_id,),
     )
-    return {"id": team["id"], "name": team["name"], "members": [member_payload(m, team_id) for m in members]}
+    projects = db.query(
+        "SELECT id, name FROM projects WHERE owner_team_id=%s AND is_active=1 ORDER BY name",
+        (team_id,),
+    )
+    lead_user = None
+    if team.get("lead_user_id"):
+        lu = db.one("SELECT * FROM users WHERE id=%s", (team["lead_user_id"],))
+        if lu:
+            display = lu.get("display_name") or f"{lu.get('first_name', '')} {lu.get('last_name', '')}".strip()
+            lead_user = {
+                "id": lu["id"],
+                "name": display,
+                "email": lu.get("email") or "",
+                "avatarColor": lu.get("avatar_color") or avatar_class(lu["id"]),
+                "avatarUrl": lu.get("avatar_url") or "",
+                "initials": initials(display),
+                "role": lu.get("role") or "member",
+            }
+    member_list = []
+    for m in members:
+        display = m.get("display_name") or f"{m.get('first_name', '')} {m.get('last_name', '')}".strip()
+        is_lead = team.get("lead_user_id") and m["id"] == team["lead_user_id"]
+        member_list.append({
+            "id": m["id"],
+            "name": display,
+            "email": m.get("email") or "",
+            "avatarColor": m.get("avatar_color") or avatar_class(m["id"]),
+            "avatarUrl": m.get("avatar_url") or "",
+            "initials": initials(display),
+            "role": m.get("role") or "member",
+            "position": "Lead" if is_lead else "Member",
+        })
+    project_list = []
+    for p in projects:
+        badge = "".join(part[0] for part in str(p["name"]).split()[:2]).upper() or "P"
+        project_list.append({"id": p["id"], "name": p["name"], "badge": badge})
+    return {
+        "id": team["id"],
+        "name": team["name"],
+        "description": team.get("description") or "",
+        "color": team.get("color") or "#818cf8",
+        "updatedAt": date_value(team.get("updated_at")),
+        "leadUser": lead_user,
+        "members": member_list,
+        "projects": project_list,
+    }
+
+
+def _slugify_team_id(name, max_len=10):
+    import re as _re
+    slug = _re.sub(r"[^a-z0-9]+", "-", str(name).strip().lower()).strip("-")
+    return (slug or "team")[:max_len]
+
+
+def create_team(db, data):
+    name = str(data.get("name") or "").strip()
+    if not name:
+        raise ValueError("Team name is required.")
+    team_id = str(data.get("id") or data.get("shortCode") or "").strip()
+    if not team_id:
+        team_id = _slugify_team_id(name)
+    # ensure unique
+    base = team_id
+    idx = 2
+    while db.one("SELECT id FROM teams WHERE id=%s", (team_id,)):
+        team_id = f"{base}-{idx}"
+        idx += 1
+    description = str(data.get("description") or "").strip()
+    color = str(data.get("color") or "#818cf8").strip()
+    db.execute(
+        "INSERT INTO teams (id, name, description, color) VALUES (%s,%s,%s,%s)",
+        (team_id, name, description, color),
+    )
+    # set members
+    for uid in data.get("memberIds") or []:
+        db.execute("INSERT IGNORE INTO team_members (team_id, user_id) VALUES (%s,%s)", (team_id, int(uid)))
+    # set lead
+    lead_uid = data.get("leadUserId")
+    if lead_uid:
+        db.execute("UPDATE teams SET lead_user_id=%s WHERE id=%s", (int(lead_uid), team_id))
+    # set projects
+    project_ids = data.get("projectIds") or []
+    if project_ids:
+        placeholders = ",".join(["%s"] * len(project_ids))
+        db.execute(
+            f"UPDATE projects SET owner_team_id=%s WHERE id IN ({placeholders}) AND is_active=1",
+            [team_id] + list(project_ids),
+        )
+    return get_team(db, team_id)
+
+
+def update_team(db, team_id, data):
+    team = db.one("SELECT * FROM teams WHERE id=%s AND is_active=1", (team_id,))
+    if not team:
+        raise KeyError("Team not found.")
+    fields = []
+    args = []
+    if "name" in data:
+        fields.append("name=%s")
+        args.append(str(data["name"]).strip())
+    if "description" in data:
+        fields.append("description=%s")
+        args.append(str(data["description"]).strip())
+    if "color" in data:
+        fields.append("color=%s")
+        args.append(str(data["color"]).strip())
+    if fields:
+        args.append(team_id)
+        db.execute(f"UPDATE teams SET {', '.join(fields)} WHERE id=%s", args)
+    return get_team(db, team_id)
+
+
+def delete_team(db, team_id):
+    db.execute("UPDATE teams SET is_active=0 WHERE id=%s", (team_id,))
+
+
+def add_team_member(db, team_id, user_id):
+    db.execute("INSERT IGNORE INTO team_members (team_id, user_id) VALUES (%s,%s)", (team_id, int(user_id)))
+    return get_team(db, team_id)
+
+
+def remove_team_member(db, team_id, user_id):
+    user_id = int(user_id)
+    db.execute("DELETE FROM team_members WHERE team_id=%s AND user_id=%s", (team_id, user_id))
+    team = db.one("SELECT * FROM teams WHERE id=%s", (team_id,))
+    if team and team.get("lead_user_id") == user_id:
+        db.execute("UPDATE teams SET lead_user_id=NULL WHERE id=%s", (team_id,))
+    return get_team(db, team_id)
+
+
+def set_team_lead(db, team_id, user_id):
+    user_id = int(user_id)
+    # ensure user is a member
+    db.execute("INSERT IGNORE INTO team_members (team_id, user_id) VALUES (%s,%s)", (team_id, user_id))
+    db.execute("UPDATE teams SET lead_user_id=%s WHERE id=%s", (user_id, team_id))
+    return get_team(db, team_id)
+
+
+def set_team_projects(db, team_id, project_ids):
+    if project_ids:
+        placeholders = ",".join(["%s"] * len(project_ids))
+        db.execute(
+            f"UPDATE projects SET owner_team_id=%s WHERE id IN ({placeholders}) AND is_active=1",
+            [team_id] + list(project_ids),
+        )
+        db.execute(
+            f"UPDATE projects SET owner_team_id=NULL WHERE owner_team_id=%s AND id NOT IN ({placeholders}) AND is_active=1",
+            [team_id] + list(project_ids),
+        )
+    else:
+        db.execute("UPDATE projects SET owner_team_id=NULL WHERE owner_team_id=%s AND is_active=1", (team_id,))
+    return get_team(db, team_id)
 
 
 def list_users(db):

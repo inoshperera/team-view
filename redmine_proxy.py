@@ -122,12 +122,12 @@ class TeamViewHandler(BaseHTTPRequestHandler):
             })
         elif path == "/api/teams" and method == "GET":
             self.json(200, {"teams": services.list_teams(DB)})
-        elif path.startswith("/api/teams/") and method == "GET":
-            team_id = path.rsplit("/", 1)[-1]
-            team = services.get_team(DB, team_id)
-            if not team:
-                raise KeyError("Team not found.")
-            self.json(200, {"team": team})
+        elif path == "/api/teams" and method == "POST":
+            team = services.create_team(DB, self.body_json())
+            self.json(201, {"team": team})
+        elif path.startswith("/api/teams/"):
+            self.handle_team_route(method, path, user)
+            return
         elif path == "/api/projects" and method == "GET":
             db_user = self.db_user(user)
             lead_teams = services.teams_for_user(DB, db_user["id"]) if db_user["role"] == "lead" else None
@@ -161,6 +161,45 @@ class TeamViewHandler(BaseHTTPRequestHandler):
             self.json(200, result)
         else:
             raise ApiError("Unknown API route.", 404)
+
+    def handle_team_route(self, method, path, user):
+        parts = path.strip("/").split("/")
+        # parts: ["api", "teams", team_id, ...]
+        team_id = parts[2] if len(parts) > 2 else None
+        if not team_id:
+            raise ApiError("Team id required.", 400)
+        if len(parts) == 3:
+            if method == "GET":
+                team = services.get_team(DB, team_id)
+                if not team:
+                    raise KeyError("Team not found.")
+                self.json(200, {"team": team})
+            elif method == "PATCH":
+                team = services.update_team(DB, team_id, self.body_json())
+                self.json(200, {"team": team})
+            elif method == "DELETE":
+                services.delete_team(DB, team_id)
+                self.json(204, None)
+            else:
+                raise ApiError("Unsupported method.", 405)
+        elif len(parts) == 4 and parts[3] == "members" and method == "POST":
+            body = self.body_json()
+            team = services.add_team_member(DB, team_id, body.get("userId"))
+            self.json(200, {"team": team})
+        elif len(parts) == 5 and parts[3] == "members" and method == "DELETE":
+            user_id = parts[4]
+            team = services.remove_team_member(DB, team_id, user_id)
+            self.json(200, {"team": team})
+        elif len(parts) == 4 and parts[3] == "lead" and method == "POST":
+            body = self.body_json()
+            team = services.set_team_lead(DB, team_id, body.get("userId"))
+            self.json(200, {"team": team})
+        elif len(parts) == 4 and parts[3] == "projects" and method == "PATCH":
+            body = self.body_json()
+            team = services.set_team_projects(DB, team_id, body.get("projectIds") or [])
+            self.json(200, {"team": team})
+        else:
+            raise ApiError("Unknown team route.", 404)
 
     def handle_task_route(self, method, path, user):
         parts = path.strip("/").split("/")
