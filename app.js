@@ -49,12 +49,17 @@ const state = {
             q: ""
         },
         advancedFiltersOpen: false,
+        listView: true,
         groupMode: "priority",
         nonePriorityFirst: false,
         extraFieldsOpen: false,
         expandedOrgTaskId: null,
         orgLoadingParentId: null,
         orgChildTasks: new Map(),
+        drag: {
+            taskId: null,
+            suppressClickUntil: 0
+        },
         editorTask: null,
         editorParentTaskId: null,
         linkedTicket: null
@@ -185,6 +190,7 @@ const els = {
     plannerTeamFilter: document.getElementById("plannerTeamFilter"),
     plannerMemberField: document.getElementById("plannerMemberField"),
     plannerMemberFilter: document.getElementById("plannerMemberFilter"),
+    plannerListViewToggle: document.getElementById("plannerListViewToggle"),
     plannerFilterButton: document.getElementById("plannerFilterButton"),
     plannerCategoryFilter: document.getElementById("plannerCategoryFilter"),
     plannerPriorityFilter: document.getElementById("plannerPriorityFilter"),
@@ -527,6 +533,7 @@ function bindEvents() {
     els.showDetailedTickets.addEventListener("change", handleShowDetailedTicketsChange);
     els.plannerTeamFilter.addEventListener("change", () => updatePlannerFilter("teamId", els.plannerTeamFilter.value));
     els.plannerMemberFilter.addEventListener("change", () => updatePlannerFilter("memberId", els.plannerMemberFilter.value));
+    els.plannerListViewToggle.addEventListener("change", togglePlannerListView);
     els.plannerFilterButton.addEventListener("click", togglePlannerAdvancedFilters);
     els.plannerCategoryFilter.addEventListener("change", () => updatePlannerFilter("category", els.plannerCategoryFilter.value));
     els.plannerPriorityFilter.addEventListener("change", () => updatePlannerFilter("priority", els.plannerPriorityFilter.value));
@@ -750,6 +757,7 @@ function syncPlannerControls() {
     els.plannerMemberField.classList.toggle("is-hidden", isOrganizationScope);
     els.plannerFilterButton.classList.toggle("is-hidden", isOrganizationScope);
     els.plannerToggleRow.classList.toggle("is-hidden", isOrganizationScope);
+    els.plannerListViewToggle.checked = state.planner.listView;
     const users = filteredPlannerUsersForTeam(state.planner.filters.teamId);
     els.plannerMemberFilter.innerHTML = `<option value="">All members</option>${users.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("")}`;
     els.plannerMemberFilter.value = state.planner.filters.memberId;
@@ -870,6 +878,12 @@ function togglePlannerAdvancedFilters() {
     }
     state.planner.advancedFiltersOpen = true;
     syncPlannerControls();
+}
+
+function togglePlannerListView() {
+    state.planner.listView = els.plannerListViewToggle.checked;
+    syncPlannerControls();
+    renderPlanner();
 }
 
 function setPlannerGroup(groupMode) {
@@ -3175,13 +3189,31 @@ function renderPlanner() {
             </div>
             ${listTasks.length ? listTasks.map(renderPlannerTaskCard).join("") : `<div class="empty-state planner-empty"><h2>No non priority tasks</h2><p>The current team and filter selection has no open tasks without a priority.</p></div>`}
         `;
-    } else {
+    } else if (state.planner.listView) {
         els.plannerBoard.classList.add("is-list", "is-organization-list");
         els.plannerBoard.classList.remove("is-lanes");
         els.plannerBoard.innerHTML = renderOrganizationPriorityLists(tasks);
+    } else {
+        els.plannerBoard.classList.add("is-lanes");
+        els.plannerBoard.classList.remove("is-list", "is-organization-list");
+        els.plannerBoard.innerHTML = plannerLaneItems().map((lane) => {
+            const laneTasks = tasks.filter((task) => state.planner.groupMode === "priority" ? task.priorityId === lane.id : task.categoryId === lane.id);
+            return `
+                <section class="planner-lane ${escapeHtml(lane.colorClass || "")}" data-planner-lane="${escapeHtml(lane.id)}">
+                    <div class="planner-lane-title">
+                        <span>${escapeHtml(lane.label)}</span>
+                        <span class="lane-count">${laneTasks.length}</span>
+                    </div>
+                    <div class="planner-lane-stack" data-planner-drop-list="${escapeHtml(lane.id)}">
+                        ${laneTasks.length ? laneTasks.map(renderPlannerTaskCard).join("") : `<div class="empty-mini planner-drop-empty">No tasks</div>`}
+                    </div>
+                </section>
+            `;
+        }).join("");
     }
 
     els.plannerBoard.querySelector("#closeNonePriorityListButton")?.addEventListener("click", closeNonePriorityTasksFirst);
+    bindPlannerDragAndDrop();
     els.plannerBoard.querySelectorAll("[data-planner-edit]").forEach((button) => {
         button.addEventListener("click", () => {
             const task = findPlannerTaskById(button.dataset.plannerEdit);
@@ -3214,6 +3246,9 @@ function renderPlanner() {
     });
     els.plannerBoard.querySelectorAll("[data-org-expand]").forEach((row) => {
         row.addEventListener("click", async (event) => {
+            if (Date.now() < state.planner.drag.suppressClickUntil) {
+                return;
+            }
             if (event.target.closest("button")) {
                 return;
             }
@@ -3228,6 +3263,178 @@ function renderPlanner() {
             }
         });
     });
+}
+
+function bindPlannerDragAndDrop() {
+    const draggableItems = els.plannerBoard.querySelectorAll("[data-planner-drag-task]");
+    const dropTargets = els.plannerBoard.querySelectorAll("[data-planner-drop-group], [data-planner-drop-list], .planner-lane, .planner-lane-stack");
+    draggableItems.forEach((item) => {
+        item.addEventListener("dragstart", handlePlannerDragStart);
+        item.addEventListener("dragend", handlePlannerDragEnd);
+    });
+    dropTargets.forEach((target) => {
+        target.addEventListener("dragenter", handlePlannerDragEnter);
+        target.addEventListener("dragover", handlePlannerDragOver);
+        target.addEventListener("dragleave", handlePlannerDragLeave);
+        target.addEventListener("drop", handlePlannerDrop);
+    });
+}
+
+function handlePlannerDragStart(event) {
+    const taskId = event.currentTarget.dataset.plannerDragTask;
+    state.planner.drag.taskId = taskId;
+    event.currentTarget.classList.add("is-dragging");
+    event.currentTarget.closest(".org-task-group")?.classList.add("is-dragging");
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", taskId);
+}
+
+function handlePlannerDragEnd(event) {
+    event.currentTarget.classList.remove("is-dragging");
+    event.currentTarget.closest(".org-task-group")?.classList.remove("is-dragging");
+    state.planner.drag.taskId = null;
+    state.planner.drag.suppressClickUntil = Date.now() + 250;
+    clearPlannerDropState();
+}
+
+function handlePlannerDragEnter(event) {
+    if (!state.planner.drag.taskId) {
+        return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const list = plannerDropListFromEvent(event);
+    plannerDropGroupFromEvent(event)?.classList.add("is-drag-over");
+    list?.classList.add("is-drag-over");
+}
+
+function handlePlannerDragOver(event) {
+    if (!state.planner.drag.taskId) {
+        return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "move";
+    const list = plannerDropListFromEvent(event);
+    if (!list) {
+        return;
+    }
+    list.classList.add("is-drag-over");
+    plannerDropGroupFromEvent(event)?.classList.add("is-drag-over");
+    positionPlannerDropPlaceholder(list, event.clientY);
+}
+
+function handlePlannerDragLeave(event) {
+    event.stopPropagation();
+    const group = plannerDropGroupFromEvent(event);
+    if (group && !group.contains(event.relatedTarget)) {
+        group.classList.remove("is-drag-over");
+        group.querySelector("[data-planner-drop-list], .planner-lane-stack")?.classList.remove("is-drag-over");
+    }
+}
+
+async function handlePlannerDrop(event) {
+    if (!state.planner.drag.taskId) {
+        return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const list = plannerDropListFromEvent(event);
+    const group = plannerDropGroupFromEvent(event);
+    const groupId = list?.dataset.plannerDropList || group?.dataset.plannerDropGroup || group?.dataset.plannerLane;
+    const task = findPlannerTaskById(state.planner.drag.taskId);
+    clearPlannerDropState();
+    if (!task || !groupId) {
+        return;
+    }
+    try {
+        await movePlannerTaskToGroup(task, groupId);
+    } catch (error) {
+        alert(error.message || "Failed to move task.");
+        await refreshPlanner();
+    }
+}
+
+function plannerDropListFromEvent(event) {
+    if (event.currentTarget?.matches?.("[data-planner-drop-list], .planner-lane-stack")) {
+        return event.currentTarget;
+    }
+    const directList = event.target.closest?.("[data-planner-drop-list], .planner-lane-stack");
+    if (directList) {
+        return directList;
+    }
+    const group = plannerDropGroupFromEvent(event);
+    return group?.querySelector?.("[data-planner-drop-list], .planner-lane-stack") || null;
+}
+
+function plannerDropGroupFromEvent(event) {
+    if (event.currentTarget?.matches?.("[data-planner-drop-group], .planner-lane")) {
+        return event.currentTarget;
+    }
+    return event.target.closest?.("[data-planner-drop-group], .planner-lane");
+}
+
+function plannerDropPlaceholder() {
+    let placeholder = els.plannerBoard.querySelector(".planner-drop-placeholder");
+    if (!placeholder) {
+        placeholder = document.createElement("div");
+        placeholder.className = "planner-drop-placeholder";
+        placeholder.setAttribute("aria-hidden", "true");
+    }
+    return placeholder;
+}
+
+function positionPlannerDropPlaceholder(list, clientY) {
+    const placeholder = plannerDropPlaceholder();
+    const items = [...list.querySelectorAll(".org-task-group:not(.is-dragging), .planner-task-card:not(.is-dragging)")];
+    const beforeItem = items.find((item) => {
+        const rect = item.getBoundingClientRect();
+        return clientY < rect.top + rect.height / 2;
+    });
+    const emptyState = list.querySelector(".planner-drop-empty");
+    if (emptyState) {
+        list.insertBefore(placeholder, emptyState);
+    } else if (beforeItem) {
+        list.insertBefore(placeholder, beforeItem);
+    } else {
+        list.appendChild(placeholder);
+    }
+}
+
+function clearPlannerDropState() {
+    els.plannerBoard.querySelectorAll(".is-drag-over").forEach((item) => item.classList.remove("is-drag-over"));
+    els.plannerBoard.querySelectorAll(".org-task-group.is-dragging").forEach((item) => item.classList.remove("is-dragging"));
+    els.plannerBoard.querySelector(".planner-drop-placeholder")?.remove();
+}
+
+async function movePlannerTaskToGroup(task, groupId) {
+    const field = state.planner.groupMode === "category" ? "categoryId" : "priorityId";
+    if (String(task[field] || "") === String(groupId)) {
+        return;
+    }
+    const body = plannerTaskPatchBody(task);
+    body[field] = groupId;
+    const taskRow = els.plannerBoard.querySelector(`[data-planner-drag-task="${CSS.escape(String(task.id))}"]`);
+    taskRow?.classList.add("is-saving");
+    await apiJson(`/api/tasks/${task.id}`, { method: "PATCH", body });
+    await refreshPlannerAfterTaskMutation(task.parentTaskId);
+}
+
+function plannerTaskPatchBody(task) {
+    return {
+        teamId: task.teamId,
+        projectId: task.projectId || null,
+        parentTaskId: task.parentTaskId || null,
+        categoryId: task.categoryId,
+        priorityId: task.priorityId,
+        statusId: task.statusId,
+        title: task.title,
+        description: task.description || "",
+        progress: clampProgress(task.progress),
+        startDate: task.startDate || "",
+        dueDate: task.dueDate || "",
+        memberIds: task.memberIds || (task.members || []).map((member) => member.id)
+    };
 }
 
 function findPlannerTaskById(taskId) {
@@ -3341,17 +3548,16 @@ function renderOrganizationPriorityLists(tasks) {
         .map((item) => ({
             item,
             tasks: organizationSortedTasks(tasks.filter((task) => task[groupKey] === item.id))
-        }))
-        .filter((group) => group.tasks.length > 0);
+        }));
     return grouped.map(({ item, tasks }) => `
-        <section class="org-priority-section ${escapeHtml(item.colorClass || "")}">
+        <section class="org-priority-section ${escapeHtml(item.colorClass || "")}" data-planner-drop-group="${escapeHtml(item.id)}">
             <div class="org-priority-title">
                 <span class="priority-dot ${escapeHtml(item.colorClass || "")}"></span>
                 <span>${escapeHtml(item.label)}</span>
                 <span class="lane-count">${tasks.length}</span>
             </div>
-            <div class="org-task-list">
-                ${tasks.map(renderOrganizationTaskRow).join("")}
+            <div class="org-task-list" data-planner-drop-list="${escapeHtml(item.id)}">
+                ${tasks.length ? tasks.map(renderOrganizationTaskRow).join("") : `<div class="empty-mini planner-drop-empty">No tasks</div>`}
             </div>
         </section>
     `).join("");
@@ -3400,7 +3606,7 @@ function renderOrganizationTaskRow(task) {
         : "";
     return `
         <div class="org-task-group ${isExpanded ? "is-expanded" : ""}">
-            <article class="org-task-row ${escapeHtml(priority?.colorClass || "")}" data-org-expand="${escapeHtml(task.id)}">
+            <article class="org-task-row ${escapeHtml(priority?.colorClass || "")}" draggable="true" data-planner-drag-task="${escapeHtml(task.id)}" data-org-expand="${escapeHtml(task.id)}">
                 <div class="org-task-main">
                     <div class="planner-chip-row">
                         <span class="planner-chip ${escapeHtml(category?.colorClass || "")}">${escapeHtml(category?.label || task.categoryId)}</span>
@@ -3480,7 +3686,7 @@ function renderPlannerTaskCard(task) {
            </span>`
         : "";
     return `
-        <article class="planner-task-card ${escapeHtml(priority?.colorClass || "")}">
+        <article class="planner-task-card ${escapeHtml(priority?.colorClass || "")}" draggable="true" data-planner-drag-task="${escapeHtml(task.id)}">
             <div class="planner-task-head">
                 <div class="planner-chip-row">
                     <span class="planner-chip ${escapeHtml(category?.colorClass || "")}">${escapeHtml(category?.label || task.categoryId)}</span>

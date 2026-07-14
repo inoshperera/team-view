@@ -1388,6 +1388,14 @@ h1 {
     display: none;
 }
 
+.planner-view-toggle {
+    min-height: 38px;
+    align-self: end;
+    padding: 6px 10px;
+    background: #f8fafc;
+    font-size: 0.82rem;
+}
+
 .planner-toggle-row {
     position: relative;
     align-self: end;
@@ -1482,6 +1490,27 @@ h1 {
     border: 1px solid var(--line);
     border-radius: 8px;
     background: var(--surface);
+    transition: transform 0.16s ease, opacity 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+    cursor: grab;
+}
+
+.planner-task-card:active,
+.org-task-row:active {
+    cursor: grabbing;
+}
+
+.planner-task-card.is-dragging,
+.org-task-row.is-dragging,
+.org-task-group.is-dragging .org-task-row {
+    opacity: 0.48;
+    transform: scale(0.99);
+    box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
+}
+
+.planner-task-card.is-saving,
+.org-task-row.is-saving {
+    opacity: 0.62;
+    pointer-events: none;
 }
 
 .planner-task-card.pri-critical {
@@ -1507,6 +1536,12 @@ h1 {
 .org-priority-section {
     display: grid;
     gap: 10px;
+    border-radius: 10px;
+    transition: background-color 0.16s ease;
+}
+
+.org-priority-section.is-drag-over {
+    background: rgba(37, 99, 235, 0.026);
 }
 
 .org-priority-title {
@@ -1520,6 +1555,41 @@ h1 {
 .org-task-list {
     display: grid;
     gap: 10px;
+    min-height: 42px;
+    border-radius: 8px;
+    transition: background-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.org-task-list.is-drag-over,
+.planner-lane-stack.is-drag-over {
+    background: rgba(37, 99, 235, 0.045);
+    box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.16);
+}
+
+.org-task-list.is-drag-over .planner-drop-empty {
+    display: none;
+}
+
+.planner-drop-placeholder {
+    min-height: 58px;
+    border: 2px dashed rgba(37, 99, 235, 0.42);
+    border-radius: 8px;
+    background: rgba(239, 246, 255, 0.72);
+    pointer-events: none;
+    animation: plannerDropGap 150ms ease-out;
+}
+
+@keyframes plannerDropGap {
+    from {
+        min-height: 10px;
+        opacity: 0;
+        transform: scaleY(0.65);
+    }
+    to {
+        min-height: 58px;
+        opacity: 1;
+        transform: scaleY(1);
+    }
 }
 
 .org-task-group {
@@ -1539,6 +1609,7 @@ h1 {
     border-radius: 8px;
     background: var(--surface);
     cursor: pointer;
+    transition: transform 0.16s ease, opacity 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
 }
 
 .org-task-row.pri-critical {
