@@ -300,6 +300,13 @@ class TeamViewHandler(BaseHTTPRequestHandler):
             if not task:
                 raise KeyError("Task not found.")
             self.json(200, {"task": task})
+        elif len(parts) == 4 and parts[3] == "audit" and method == "GET":
+            task = services.get_task(DB, task_id)
+            if not task:
+                raise KeyError("Task not found.")
+            if db_user["role"] in ("lead", "member") and task.get("teamId") not in services.teams_for_user(DB, db_user["id"]):
+                raise PermissionError("You do not have access to this team.")
+            self.json(200, {"task": task, "audit": services.task_audit_history(DB, task_id)})
         elif len(parts) == 3 and method == "PATCH":
             self.audit("task_update", user=user, outcome="attempt", task_id=task_id)
             task = services.save_task(DB, db_user, self.body_json(), task_id)

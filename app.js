@@ -60,6 +60,7 @@ const state = {
             taskId: null,
             suppressClickUntil: 0
         },
+        viewingTaskId: null,
         editorTask: null,
         editorParentTaskId: null,
         linkedTicket: null
@@ -261,6 +262,11 @@ const els = {
     plannerTaskDue: document.getElementById("plannerTaskDue"),
     plannerSyncedPanel: document.getElementById("plannerSyncedPanel"),
     plannerTaskMembers: document.getElementById("plannerTaskMembers"),
+    plannerTaskViewModal: document.getElementById("plannerTaskViewModal"),
+    plannerTaskViewEyebrow: document.getElementById("plannerTaskViewEyebrow"),
+    plannerTaskViewTitle: document.getElementById("plannerTaskViewTitle"),
+    plannerTaskViewBody: document.getElementById("plannerTaskViewBody"),
+    closePlannerTaskViewButton: document.getElementById("closePlannerTaskViewButton"),
     confirmModal: document.getElementById("confirmModal"),
     confirmModalEyebrow: document.getElementById("confirmModalEyebrow"),
     confirmModalTitle: document.getElementById("confirmModalTitle"),
@@ -545,6 +551,12 @@ function bindEvents() {
     els.cancelPlannerTaskButton.addEventListener("click", closePlannerEditor);
     els.deletePlannerTaskButton.addEventListener("click", deletePlannerTask);
     els.plannerTaskModal.addEventListener("submit", savePlannerTask);
+    els.closePlannerTaskViewButton.addEventListener("click", closePlannerTaskView);
+    els.plannerTaskViewModal.addEventListener("click", (event) => {
+        if (event.target === els.plannerTaskViewModal) {
+            closePlannerTaskView();
+        }
+    });
     els.confirmCancelButton.addEventListener("click", () => settleConfirmDialog(false));
     els.confirmAcceptButton.addEventListener("click", () => settleConfirmDialog(true));
     els.confirmModal.addEventListener("click", (event) => {
@@ -553,6 +565,10 @@ function bindEvents() {
         }
     });
     document.addEventListener("keydown", (event) => {
+        if (!els.plannerTaskViewModal.classList.contains("is-hidden") && event.key === "Escape") {
+            closePlannerTaskView();
+            return;
+        }
         if (!els.confirmModal.classList.contains("is-hidden") && event.key === "Escape") {
             settleConfirmDialog(false);
         }
@@ -3214,6 +3230,11 @@ function renderPlanner() {
 
     els.plannerBoard.querySelector("#closeNonePriorityListButton")?.addEventListener("click", closeNonePriorityTasksFirst);
     bindPlannerDragAndDrop();
+    els.plannerBoard.querySelectorAll("[data-planner-view]").forEach((button) => {
+        button.addEventListener("click", () => {
+            openPlannerTaskView(button.dataset.plannerView);
+        });
+    });
     els.plannerBoard.querySelectorAll("[data-planner-edit]").forEach((button) => {
         button.addEventListener("click", () => {
             const task = findPlannerTaskById(button.dataset.plannerEdit);
@@ -3620,6 +3641,9 @@ function renderOrganizationTaskRow(task) {
                 <div class="org-task-actions">
                     <div class="org-member-icons" aria-label="Assigned members">${memberIcons}</div>
                     ${progressMarkup}
+                    <button class="card-action-btn org-action-btn" type="button" data-planner-view="${task.id}" aria-label="View task details" title="View details">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                    </button>
                     <button class="card-action-btn org-action-btn" type="button" data-planner-edit="${task.id}" aria-label="Edit task" title="Edit">
                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                     </button>
@@ -3658,6 +3682,9 @@ function renderOrganizationChildTaskRow(task) {
             <div class="org-task-actions">
                 <div class="org-member-icons" aria-label="Assigned members">${memberIcons}</div>
                 ${progressMarkup}
+                <button class="card-action-btn org-action-btn" type="button" data-planner-view="${task.id}" aria-label="View task details" title="View details">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                </button>
                 <button class="card-action-btn org-action-btn" type="button" data-planner-edit="${task.id}" aria-label="Edit task" title="Edit">
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                 </button>
@@ -3708,6 +3735,9 @@ function renderPlannerTaskCard(task) {
                 <div>${(task.members || []).map((member) => `<span class="member-pill"><span class="mini-avatar ${escapeHtml(member.avatarColor || "")}">${escapeHtml(member.initials || initialsFromName(member.name))}</span>${escapeHtml(member.name)}</span>`).join("") || `<span class="no-members">No members assigned</span>`}</div>
             </div>
             <div class="card-actions">
+                <button class="card-action-btn" type="button" data-planner-view="${task.id}" aria-label="View task details" title="View details">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                </button>
                 <button class="card-action-btn" type="button" data-planner-edit="${task.id}" aria-label="Edit task" title="Edit">
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                 </button>
@@ -3717,6 +3747,170 @@ function renderPlannerTaskCard(task) {
             </div>
         </article>
     `;
+}
+
+async function openPlannerTaskView(taskId) {
+    const task = findPlannerTaskById(taskId);
+    state.planner.viewingTaskId = taskId;
+    els.plannerTaskViewTitle.textContent = task?.title || "High-level task";
+    els.plannerTaskViewEyebrow.textContent = task ? `Task #${task.id}` : "Task details";
+    els.plannerTaskViewBody.innerHTML = `<div class="empty-mini">Loading task details...</div>`;
+    els.plannerTaskViewModal.classList.remove("is-hidden");
+    try {
+        const payload = await apiJson(`/api/tasks/${encodeURIComponent(taskId)}/audit`);
+        renderPlannerTaskView(payload.task, payload.audit || []);
+    } catch (error) {
+        els.plannerTaskViewBody.innerHTML = `<div class="period-error">${escapeHtml(error.message || "Unable to load task details.")}</div>`;
+    }
+}
+
+function closePlannerTaskView() {
+    state.planner.viewingTaskId = null;
+    els.plannerTaskViewModal.classList.add("is-hidden");
+    els.plannerTaskViewBody.innerHTML = "";
+}
+
+function renderPlannerTaskView(task, auditRows) {
+    const priority = lookup(state.planner.priorities, task.priorityId);
+    const category = lookup(state.planner.categories, task.categoryId);
+    const status = lookup(state.planner.statuses, task.statusId);
+    const team = lookup(state.planner.teams, task.teamId);
+    const due = dueLabel(task.dueDate);
+    const teamName = teamDisplayName(team) || "Not set";
+    els.plannerTaskViewTitle.textContent = task.title;
+    els.plannerTaskViewEyebrow.textContent = `Task #${task.id} · ${teamName}`;
+    els.plannerTaskViewBody.innerHTML = `
+        <div class="task-view-summary">
+            <div><span>Team</span><strong>${escapeHtml(teamName)}</strong></div>
+            <div><span>Category</span><strong>${escapeHtml(category?.label || task.categoryId || "Not set")}</strong></div>
+            <div><span>Priority</span><strong>${escapeHtml(priority?.label || task.priorityId || "Not set")}</strong></div>
+            <div><span>Status</span><strong>${escapeHtml(status?.label || task.statusId || "Not set")}</strong></div>
+            <div><span>Progress</span><strong>${clampProgress(task.progress)}%</strong></div>
+            <div><span>Due</span><strong class="${due.className}">${escapeHtml(task.dueDate || due.label)}</strong></div>
+        </div>
+        <div class="task-view-section">
+            <h3>Description</h3>
+            <p>${escapeHtml(task.description || "No description added.")}</p>
+        </div>
+        <div class="task-view-section">
+            <h3>Assigned members</h3>
+            <div class="task-view-members">
+                ${(task.members || []).map((member) => `<span class="member-pill"><span class="mini-avatar ${escapeHtml(member.avatarColor || "")}">${escapeHtml(member.initials || initialsFromName(member.name))}</span>${escapeHtml(member.name)}</span>`).join("") || `<span class="no-members">No members assigned</span>`}
+            </div>
+        </div>
+        <div class="task-view-section">
+            <h3>Change history</h3>
+            ${renderTaskAuditTable(auditRows)}
+        </div>
+    `;
+}
+
+function renderTaskAuditTable(auditRows) {
+    if (!auditRows.length) {
+        return `<div class="empty-mini">No history recorded yet.</div>`;
+    }
+    return `
+        <div class="task-audit-table-wrap">
+            <table class="task-audit-table">
+                <thead>
+                    <tr>
+                        <th>When</th>
+                        <th>Changed by</th>
+                        <th>Action</th>
+                        <th>Changes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${auditRows.map(renderTaskAuditRow).join("")}
+                </tbody>
+            </table>
+        </div>
+    `;
+}
+
+function renderTaskAuditRow(row) {
+    const changes = normalizedAuditChanges(row);
+    return `
+        <tr>
+            <td>${escapeHtml(formatDateTime(row.occurredAt))}</td>
+            <td>${escapeHtml(row.user?.name || "System")}</td>
+            <td>${escapeHtml(auditActionLabel(row.action))}</td>
+            <td>
+                <div class="task-audit-changes">
+                    ${changes.length ? changes.map((change) => `
+                        <div><strong>${escapeHtml(change.field || "Field")}</strong>: ${escapeHtml(formatAuditChangeValue(change.field, change.before))} → ${escapeHtml(formatAuditChangeValue(change.field, change.after))}</div>
+                    `).join("") : `<span>${escapeHtml(row.summary || "No field-level details recorded.")}</span>`}
+                </div>
+            </td>
+        </tr>
+    `;
+}
+
+function normalizedAuditChanges(row) {
+    if (Array.isArray(row.changes) && row.changes.length) {
+        return row.changes;
+    }
+    const details = row.details || {};
+    if (details.changes && Array.isArray(details.changes)) {
+        return details.changes;
+    }
+    return [];
+}
+
+function auditActionLabel(action) {
+    return ({
+        created: "Created",
+        updated: "Updated",
+        deleted: "Deleted",
+        linked_redmine: "Linked Redmine",
+        unlinked_redmine: "Unlinked Redmine",
+        redmine_sync: "Synced from Redmine"
+    })[action] || String(action || "Changed").replace(/_/g, " ");
+}
+
+function formatAuditValue(value) {
+    if (Array.isArray(value)) {
+        return value.join(", ") || "None";
+    }
+    return value === null || value === undefined || value === "" ? "Not set" : String(value);
+}
+
+function formatAuditChangeValue(field, value) {
+    const raw = formatAuditValue(value);
+    if (raw === "Not set" || raw === "None") {
+        return raw;
+    }
+    if (field === "Team") {
+        return teamDisplayName(lookup(state.planner.teams, raw)) || raw;
+    }
+    if (field === "Category") {
+        return lookup(state.planner.categories, raw)?.label || raw;
+    }
+    if (field === "Priority") {
+        return lookup(state.planner.priorities, raw)?.label || raw;
+    }
+    if (field === "Status") {
+        return lookup(state.planner.statuses, raw)?.label || raw;
+    }
+    if (field === "Assigned members") {
+        const names = raw.split(",").map((memberId) => {
+            const user = lookup(state.planner.users, memberId.trim());
+            return user?.displayName || user?.username || memberId.trim();
+        }).filter(Boolean);
+        return names.join(", ") || raw;
+    }
+    return raw;
+}
+
+function formatDateTime(value) {
+    if (!value) {
+        return "Unknown";
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+        return value;
+    }
+    return date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 }
 
 async function editPlannerTaskProgress(task) {

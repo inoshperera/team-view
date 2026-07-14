@@ -796,6 +796,23 @@ def teams_for_user(db, user_id):
 def ensure_planner_schema(db):
     db.execute(
         """
+        CREATE TABLE IF NOT EXISTS task_audit_log (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          task_id BIGINT UNSIGNED NOT NULL,
+          user_id BIGINT UNSIGNED NULL,
+          action VARCHAR(32) NOT NULL,
+          diff JSON NULL,
+          occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (id),
+          KEY idx_audit_task (task_id),
+          KEY idx_audit_time (occurred_at),
+          CONSTRAINT fk_audit_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+          CONSTRAINT fk_audit_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
+    )
+    db.execute(
+        """
         INSERT INTO statuses (id, label, is_terminal, sort_order, color_class) VALUES
           ('new', 'New', 0, 5, 'pill-new'),
           ('working', 'In progress', 0, 10, 'pill-working'),
@@ -1613,6 +1630,43 @@ def task_payload(db, row):
     }
 
 
+def task_audit_history(db, task_id):
+    rows = db.query(
+        """
+        SELECT audit.id, audit.action, audit.diff, audit.occurred_at,
+          u.id AS user_id, u.display_name, u.first_name, u.last_name, u.username, u.email
+        FROM task_audit_log audit
+        LEFT JOIN users u ON u.id=audit.user_id
+        WHERE audit.task_id=%s
+        ORDER BY audit.occurred_at DESC, audit.id DESC
+        """,
+        (task_id,),
+    )
+    return [task_audit_payload(row) for row in rows]
+
+
+def task_audit_payload(row):
+    user_name = row.get("display_name") or f"{row.get('first_name') or ''} {row.get('last_name') or ''}".strip()
+    raw_diff = row.get("diff")
+    try:
+        diff = json.loads(raw_diff) if isinstance(raw_diff, str) and raw_diff else (raw_diff or {})
+    except (TypeError, json.JSONDecodeError):
+        diff = {"raw": str(raw_diff or "")}
+    return {
+        "id": row["id"],
+        "action": row["action"],
+        "user": {
+            "id": row.get("user_id"),
+            "name": user_name or row.get("username") or row.get("email") or "System",
+            "email": row.get("email") or "",
+        },
+        "occurredAt": date_value(row.get("occurred_at")),
+        "changes": diff.get("changes") or [],
+        "summary": diff.get("summary") or "",
+        "details": diff,
+    }
+
+
 def child_progress_rollup(db, parent_task_id):
     summary = db.one(
         """
@@ -1700,7 +1754,7 @@ def save_task(db, user, payload, task_id=None):
                         (data["statusId"], data["progress"], data["startDate"], data["dueDate"], task_id),
                     )
                     replace_task_members(cursor, task_id, data["memberIds"], "manual")
-                write_audit(cursor, task_id, user["id"], "updated", payload)
+                write_audit(cursor, task_id, user["id"], "updated", task_change_diff(existing, data))
             else:
                 cursor.execute(
                     """
@@ -1715,7 +1769,7 @@ def save_task(db, user, payload, task_id=None):
                 task_id = cursor.lastrowid
                 parent_rollups.add(data["parentTaskId"])
                 replace_task_members(cursor, task_id, data["memberIds"], "manual")
-                write_audit(cursor, task_id, user["id"], "created", payload)
+                write_audit(cursor, task_id, user["id"], "created", task_create_diff(data))
     refresh_parent_progress_rollup(db, task_id)
     refresh_parent_progress_rollups(db, parent_rollups)
     return get_task(db, task_id)
@@ -1762,6 +1816,68 @@ def write_audit(cursor, task_id, user_id, action, diff):
     )
 
 
+def record_task_audit(db, task_id, user_id, action, diff):
+    db.execute(
+        "INSERT INTO task_audit_log (task_id,user_id,action,diff) VALUES (%s,%s,%s,%s)",
+        (task_id, user_id, action, json.dumps(diff, default=str)),
+    )
+
+
+def task_create_diff(data):
+    return {
+        "summary": "Task created",
+        "changes": [{"field": label, "before": "", "after": audit_display_value(key, data.get(key))} for key, label in task_audit_fields()],
+    }
+
+
+def task_change_diff(existing, data):
+    changes = []
+    for key, label in task_audit_fields():
+        before = existing.get(key)
+        after = data.get(key)
+        if normalize_audit_value(before) != normalize_audit_value(after):
+            changes.append({
+                "field": label,
+                "before": audit_display_value(key, before),
+                "after": audit_display_value(key, after),
+            })
+    return {
+        "summary": f"{len(changes)} field(s) changed" if changes else "Task saved without visible field changes",
+        "changes": changes,
+    }
+
+
+def task_audit_fields():
+    return (
+        ("teamId", "Team"),
+        ("projectId", "Project"),
+        ("parentTaskId", "Depends on"),
+        ("categoryId", "Category"),
+        ("priorityId", "Priority"),
+        ("statusId", "Status"),
+        ("title", "Title"),
+        ("description", "Description"),
+        ("progress", "Progress"),
+        ("startDate", "Start date"),
+        ("dueDate", "Due date"),
+        ("memberIds", "Assigned members"),
+    )
+
+
+def normalize_audit_value(value):
+    if isinstance(value, list):
+        return sorted(str(item) for item in value)
+    return "" if value is None else str(value)
+
+
+def audit_display_value(key, value):
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value) if value else "None"
+    if key == "progress" and value not in (None, ""):
+        return f"{value}%"
+    return str(value) if value not in (None, "") else "Not set"
+
+
 def soft_delete_task(db, user, task_id):
     task = get_task(db, task_id)
     if not task:
@@ -1769,6 +1885,7 @@ def soft_delete_task(db, user, task_id):
     if not can_mutate_team(db, user, task["teamId"]):
         raise PermissionError("You do not have access to this team.")
     db.execute("UPDATE tasks SET deleted_at=UTC_TIMESTAMP(), updated_by_user_id=%s WHERE id=%s", (user["id"], task_id))
+    record_task_audit(db, task_id, user["id"], "deleted", {"summary": "Task deleted", "changes": []})
     refresh_parent_progress_rollup(db, task["parentTaskId"])
     return True
 
@@ -1794,7 +1911,9 @@ def link_task_to_ticket(db, redmine, api_key, user, task_id, value):
         db.execute("INSERT IGNORE INTO task_assignments (task_id,user_id,source) VALUES (%s,%s,'redmine')", (task_id, member_id))
     refresh_parent_progress_rollup(db, task_id)
     refresh_parent_progress_rollup(db, task["parentTaskId"])
-    return get_task(db, task_id)
+    updated = get_task(db, task_id)
+    record_task_audit(db, task_id, user["id"], "linked_redmine", task_change_diff(task, updated))
+    return updated
 
 
 def unlink_task(db, user, task_id):
@@ -1807,7 +1926,12 @@ def unlink_task(db, user, task_id):
     db.execute("UPDATE task_assignments SET source='manual' WHERE task_id=%s", (task_id,))
     refresh_parent_progress_rollup(db, task_id)
     refresh_parent_progress_rollup(db, task["parentTaskId"])
-    return get_task(db, task_id)
+    updated = get_task(db, task_id)
+    record_task_audit(db, task_id, user["id"], "unlinked_redmine", {
+        "summary": "Redmine ticket unlinked",
+        "changes": [{"field": "Redmine ticket", "before": task.get("issueKey") or task.get("redmineIssueId") or "Linked", "after": "Not set"}],
+    })
+    return updated
 
 
 def sync_linked_tasks(db, redmine, api_key, user):
@@ -1845,6 +1969,10 @@ def sync_linked_tasks(db, redmine, api_key, user):
             )
         if task:
             parent_rollups.add(task.get("parentTaskId"))
+            updated = get_task(db, row["task_id"])
+            diff = task_change_diff(task, updated)
+            if diff["changes"]:
+                record_task_audit(db, row["task_id"], user["id"], "redmine_sync", diff)
         synced.append(row["task_id"])
     refresh_parent_progress_rollups(db, [*parent_rollups, *synced])
     return {"syncedTaskIds": synced, "count": len(synced)}
