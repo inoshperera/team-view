@@ -1,4 +1,7 @@
 import json
+import logging
+import time
+import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -11,8 +14,11 @@ from backend import services
 CONFIG = load_config()
 DB = Database(CONFIG)
 REDMINE = RedmineClient(CONFIG.redmine_url)
+LOGGER = logging.getLogger("team_view.api")
+AUDIT_LOGGER = logging.getLogger("team_view.audit")
 
 ALLOWED_REDMINE_PATHS = {"/time_entries.json", "/users.json", "/issues.json"}
+SENSITIVE_QUERY_KEYS = {"api_key", "key", "token", "password", "session_id"}
 
 
 class ApiError(RuntimeError):
@@ -50,9 +56,22 @@ class TeamViewHandler(BaseHTTPRequestHandler):
         self.dispatch("DELETE")
 
     def dispatch(self, method):
+        self.request_id = self.headers.get("X-Request-ID") or str(uuid.uuid4())
+        self.started_at = time.monotonic()
+        self.response_status = 500
+        self.current_user = None
         parsed = urlparse(self.path)
         path = parsed.path
         query = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
+        LOGGER.info(
+            "request_start request_id=%s method=%s path=%s client_ip=%s origin=%s query=%s",
+            self.request_id,
+            method,
+            path,
+            self.client_ip(),
+            self.headers.get("Origin", ""),
+            redact_params(query),
+        )
         try:
             if path == "/proxy-config.json":
                 self.json(200, {"redmineUrl": CONFIG.redmine_url})
@@ -61,13 +80,25 @@ class TeamViewHandler(BaseHTTPRequestHandler):
                 self.handle_login()
                 return
             if path == "/api/auth/logout" and method == "POST":
+                user = self.session()
+                self.current_user = user
+                self.audit("logout", user=user, outcome="attempt")
                 services.logout(DB, self.headers.get("Cookie"))
                 self.clear_cookie()
+                self.audit("logout", user=user, outcome="success")
                 self.json(204, None)
                 return
 
             session = self.session()
             user = session if session else None
+            self.current_user = user
+            if user:
+                LOGGER.info(
+                    "request_auth request_id=%s user_id=%s role=%s",
+                    self.request_id,
+                    user.get("user_id"),
+                    user.get("role"),
+                )
             if path == "/team-config.json":
                 if not user:
                     raise ApiError("Sign in required before team settings can be loaded.", 401)
@@ -75,7 +106,9 @@ class TeamViewHandler(BaseHTTPRequestHandler):
                     self.json(200, services.team_config_payload(DB))
                     return
                 if method == "POST":
+                    self.audit("team_config_save", user=user, outcome="attempt")
                     self.json(200, services.save_team_config_payload(DB, self.body_json()))
+                    self.audit("team_config_save", user=user, outcome="success")
                     return
                 raise ApiError("Unsupported team config method.", 405)
 
@@ -89,23 +122,55 @@ class TeamViewHandler(BaseHTTPRequestHandler):
                 if not user:
                     raise ApiError("Sign in required before Redmine data can be loaded.", 401)
                 params = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
+                LOGGER.info(
+                    "redmine_passthrough request_id=%s user_id=%s role=%s path=%s params=%s",
+                    self.request_id,
+                    user.get("user_id"),
+                    user.get("role"),
+                    path,
+                    redact_params(params),
+                )
                 payload = REDMINE.get(path, user.get("redmine_api_key"), params)
                 self.json(200, payload)
                 return
 
             raise ApiError("This path is not handled by the local backend.", 404)
         except ApiError as exc:
+            self.log_handled_error(exc.status, path, exc)
             self.json(exc.status, {"error": str(exc)})
         except RedmineError as exc:
+            self.log_handled_error(exc.status, path, exc)
             self.json(exc.status, {"error": str(exc)})
         except PermissionError as exc:
+            self.log_handled_error(403, path, exc)
             self.json(403, {"error": str(exc)})
         except KeyError as exc:
+            self.log_handled_error(404, path, exc)
             self.json(404, {"error": str(exc).strip("'")})
         except ValueError as exc:
+            self.log_handled_error(409, path, exc)
             self.json(409, {"error": str(exc)})
         except Exception as exc:
+            LOGGER.exception(
+                "request_unhandled_error request_id=%s method=%s path=%s client_ip=%s duration_ms=%s",
+                self.request_id,
+                method,
+                path,
+                self.client_ip(),
+                self.elapsed_ms(),
+            )
             self.json(500, {"error": "Backend request failed.", "detail": str(exc)})
+        finally:
+            LOGGER.info(
+                "request_end request_id=%s method=%s path=%s status=%s duration_ms=%s user_id=%s role=%s",
+                self.request_id,
+                method,
+                path,
+                self.response_status,
+                self.elapsed_ms(),
+                (self.current_user or {}).get("user_id", ""),
+                (self.current_user or {}).get("role", ""),
+            )
 
     def handle_api(self, method, path, query, user):
         if path == "/api/auth/me" and method == "GET":
@@ -113,11 +178,30 @@ class TeamViewHandler(BaseHTTPRequestHandler):
         elif path == "/api/bootstrap" and method == "GET":
             db_user = self.db_user(user)
             lead_teams = services.teams_for_user(DB, db_user["id"]) if db_user["role"] in ("lead", "member") else None
+            directory_warnings = []
+            try:
+                sync_result = services.sync_team_directory_if_stale(DB, REDMINE, user.get("redmine_api_key"), CONFIG, max_age_hours=24)
+                directory_warnings = sync_result.get("warnings") or []
+                LOGGER.info(
+                    "directory_sync_bootstrap_check request_id=%s skipped=%s last_synced_at=%s",
+                    self.request_id,
+                    sync_result.get("skipped"),
+                    sync_result.get("lastSyncedAt"),
+                )
+            except Exception as exc:
+                directory_warnings = [{
+                    "type": "directory_sync_failed",
+                    "severity": "warning",
+                    "title": "Directory sync failed",
+                    "message": f"Using cached team directory because the latest sync failed: {exc}",
+                    "items": [],
+                }]
             self.json(200, {
                 "user": services.user_payload(user, services.primary_team_for_user(DB, user["user_id"])),
                 "teams": services.list_teams(DB, restrict_to=lead_teams),
                 "users": services.list_users(DB),
                 "projects": services.list_projects(DB, restrict_to_teams=lead_teams),
+                "directoryWarnings": directory_warnings,
                 **services.list_lookups(DB),
             })
         elif path == "/api/teams" and method == "GET":
@@ -125,8 +209,7 @@ class TeamViewHandler(BaseHTTPRequestHandler):
             visible_teams = services.teams_for_user(DB, db_user["id"]) if db_user["role"] in ("lead", "member") else None
             self.json(200, {"teams": services.list_teams(DB, restrict_to=visible_teams)})
         elif path == "/api/teams" and method == "POST":
-            team = services.create_team(DB, self.body_json())
-            self.json(201, {"team": team})
+            raise PermissionError("Teams are read-only and are synced from the organization directory.")
         elif path.startswith("/api/teams/"):
             self.handle_team_route(method, path, user)
             return
@@ -142,7 +225,9 @@ class TeamViewHandler(BaseHTTPRequestHandler):
         elif path == "/api/tasks" and method == "GET":
             self.json(200, {"tasks": services.list_tasks(DB, self.db_user(user), query)})
         elif path == "/api/tasks" and method == "POST":
+            self.audit("task_create", user=user, outcome="attempt")
             task = services.save_task(DB, self.db_user(user), self.body_json())
+            self.audit("task_create", user=user, outcome="success", task_id=task.get("id"), team_id=task.get("teamId"))
             self.json(201, {"task": task})
         elif path.startswith("/api/tasks/"):
             self.handle_task_route(method, path, user)
@@ -159,7 +244,17 @@ class TeamViewHandler(BaseHTTPRequestHandler):
             ticket = services.get_or_fetch_ticket(DB, REDMINE, user.get("redmine_api_key"), query.get("value"))
             self.json(200, {"ticket": ticket})
         elif path == "/api/sync/redmine" and method == "POST":
+            self.audit("redmine_sync", user=user, outcome="attempt")
             result = services.sync_linked_tasks(DB, REDMINE, user.get("redmine_api_key"), self.db_user(user))
+            self.audit("redmine_sync", user=user, outcome="success", count=result.get("count"))
+            self.json(200, result)
+        elif path == "/api/sync/directory" and method == "POST":
+            db_user = self.db_user(user)
+            if db_user["role"] != "manager":
+                raise PermissionError("Only managers can refresh the organization directory.")
+            self.audit("directory_sync", user=user, outcome="attempt")
+            result = services.sync_team_directory(DB, REDMINE, user.get("redmine_api_key"), CONFIG)
+            self.audit("directory_sync", user=user, outcome="success", warning_count=len(result.get("warnings") or []))
             self.json(200, result)
         else:
             raise ApiError("Unknown API route.", 404)
@@ -180,29 +275,19 @@ class TeamViewHandler(BaseHTTPRequestHandler):
                     raise KeyError("Team not found.")
                 self.json(200, {"team": team})
             elif method == "PATCH":
-                team = services.update_team(DB, team_id, self.body_json())
-                self.json(200, {"team": team})
+                raise PermissionError("Teams are read-only and are synced from the organization directory.")
             elif method == "DELETE":
-                services.delete_team(DB, team_id)
-                self.json(204, None)
+                raise PermissionError("Teams are read-only and are synced from the organization directory.")
             else:
                 raise ApiError("Unsupported method.", 405)
         elif len(parts) == 4 and parts[3] == "members" and method == "POST":
-            body = self.body_json()
-            team = services.add_team_member(DB, team_id, body.get("userId"))
-            self.json(200, {"team": team})
+            raise PermissionError("Team members are read-only and are synced from the organization directory.")
         elif len(parts) == 5 and parts[3] == "members" and method == "DELETE":
-            user_id = parts[4]
-            team = services.remove_team_member(DB, team_id, user_id)
-            self.json(200, {"team": team})
+            raise PermissionError("Team members are read-only and are synced from the organization directory.")
         elif len(parts) == 4 and parts[3] == "lead" and method == "POST":
-            body = self.body_json()
-            team = services.set_team_lead(DB, team_id, body.get("userId"))
-            self.json(200, {"team": team})
+            raise PermissionError("Team leads are read-only and are synced from the organization directory.")
         elif len(parts) == 4 and parts[3] == "projects" and method == "PATCH":
-            body = self.body_json()
-            team = services.set_team_projects(DB, team_id, body.get("projectIds") or [])
-            self.json(200, {"team": team})
+            raise PermissionError("Team project ownership is read-only while teams are synced from the organization directory.")
         else:
             raise ApiError("Unknown team route.", 404)
 
@@ -216,17 +301,25 @@ class TeamViewHandler(BaseHTTPRequestHandler):
                 raise KeyError("Task not found.")
             self.json(200, {"task": task})
         elif len(parts) == 3 and method == "PATCH":
+            self.audit("task_update", user=user, outcome="attempt", task_id=task_id)
             task = services.save_task(DB, db_user, self.body_json(), task_id)
+            self.audit("task_update", user=user, outcome="success", task_id=task.get("id"), team_id=task.get("teamId"))
             self.json(200, {"task": task})
         elif len(parts) == 3 and method == "DELETE":
+            self.audit("task_delete", user=user, outcome="attempt", task_id=task_id)
             services.soft_delete_task(DB, db_user, task_id)
+            self.audit("task_delete", user=user, outcome="success", task_id=task_id)
             self.json(204, None)
         elif len(parts) == 4 and parts[3] == "link" and method == "POST":
             body = self.body_json()
+            self.audit("task_link_redmine", user=user, outcome="attempt", task_id=task_id)
             task = services.link_task_to_ticket(DB, REDMINE, user.get("redmine_api_key"), db_user, task_id, body.get("redmineIssue") or body.get("value"))
+            self.audit("task_link_redmine", user=user, outcome="success", task_id=task.get("id"), redmine_issue_id=task.get("redmineIssueId"))
             self.json(200, {"task": task})
         elif len(parts) == 4 and parts[3] == "unlink" and method == "POST":
+            self.audit("task_unlink_redmine", user=user, outcome="attempt", task_id=task_id)
             task = services.unlink_task(DB, db_user, task_id)
+            self.audit("task_unlink_redmine", user=user, outcome="success", task_id=task.get("id"))
             self.json(200, {"task": task})
         else:
             raise ApiError("Unknown task route.", 404)
@@ -236,13 +329,37 @@ class TeamViewHandler(BaseHTTPRequestHandler):
         username = str(body.get("username") or "").strip()
         password = str(body.get("password") or "")
         if not username or not password:
+            self.audit("login", outcome="failed", username=username, reason="missing_credentials")
             raise ApiError("Username and password are required.", 400)
+        self.audit("login", outcome="attempt", username=username)
         redmine_user = REDMINE.login(username, password)
         api_key = redmine_user.get("api_key")
         if not api_key:
+            self.audit("login", outcome="failed", username=username, reason="missing_api_key")
             raise ApiError("Redmine did not return an API key for this account.", 403)
         user = services.upsert_user_from_redmine(DB, redmine_user)
-        services.sync_redmine_users(DB, REDMINE, api_key)
+        directory_warnings = []
+        try:
+            sync_result = services.sync_team_directory_if_stale(DB, REDMINE, api_key, CONFIG, max_age_hours=24)
+            directory_warnings = sync_result.get("warnings") or []
+            LOGGER.info(
+                "directory_sync_login_check request_id=%s skipped=%s last_synced_at=%s",
+                self.request_id,
+                sync_result.get("skipped"),
+                sync_result.get("lastSyncedAt"),
+            )
+        except Exception as exc:
+            directory_warnings = [{
+                "type": "directory_sync_failed",
+                "severity": "warning",
+                "title": "Directory sync failed",
+                "message": f"Using cached team directory because the latest sync failed: {exc}",
+                "items": [],
+            }]
+        user = services.upsert_user_from_redmine(DB, redmine_user)
+        if not user or not user.get("is_active"):
+            self.audit("login", outcome="failed", username=username, reason="inactive_user")
+            raise ApiError("Your account is inactive in the organization directory.", 403)
         token = services.create_session(
             DB,
             user["id"],
@@ -253,7 +370,9 @@ class TeamViewHandler(BaseHTTPRequestHandler):
         )
         self.set_cookie(token)
         team_id = services.primary_team_for_user(DB, user["id"])
-        self.json(200, {"user": services.user_payload(user, team_id)})
+        self.current_user = {"user_id": user["id"], "role": user.get("role")}
+        self.audit("login", user={"user_id": user["id"], "role": user.get("role")}, outcome="success", username=username)
+        self.json(200, {"user": services.user_payload(user, team_id), "directoryWarnings": directory_warnings})
 
     def body_json(self):
         try:
@@ -289,8 +408,10 @@ class TeamViewHandler(BaseHTTPRequestHandler):
         self.extra_cookie = "session_id=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"
 
     def json(self, status, payload):
+        self.response_status = status
         if status == 204:
             self.send_response(status)
+            self.send_header("X-Request-ID", getattr(self, "request_id", ""))
             if hasattr(self, "extra_cookie"):
                 self.send_header("Set-Cookie", self.extra_cookie)
             self.end_headers()
@@ -299,24 +420,67 @@ class TeamViewHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Request-ID", getattr(self, "request_id", ""))
         if hasattr(self, "extra_cookie"):
             self.send_header("Set-Cookie", self.extra_cookie)
         self.end_headers()
         self.wfile.write(body)
 
     def log_message(self, fmt, *args):
-        print("%s - %s" % (self.address_string(), fmt % args))
+        LOGGER.debug("http_server client_ip=%s message=%s", self.client_ip(), fmt % args)
+
+    def client_ip(self):
+        forwarded = self.headers.get("X-Forwarded-For", "")
+        if forwarded:
+            return forwarded.split(",", 1)[0].strip()
+        return self.client_address[0] if self.client_address else ""
+
+    def elapsed_ms(self):
+        return int((time.monotonic() - getattr(self, "started_at", time.monotonic())) * 1000)
+
+    def log_handled_error(self, status, path, exc):
+        LOGGER.warning(
+            "request_handled_error request_id=%s path=%s status=%s duration_ms=%s error=%s",
+            getattr(self, "request_id", ""),
+            path,
+            status,
+            self.elapsed_ms(),
+            exc,
+        )
+
+    def audit(self, event, user=None, outcome="", **fields):
+        safe_fields = " ".join(f"{key}={value}" for key, value in fields.items() if value is not None)
+        AUDIT_LOGGER.info(
+            "audit_event request_id=%s event=%s outcome=%s user_id=%s role=%s client_ip=%s %s",
+            getattr(self, "request_id", ""),
+            event,
+            outcome,
+            (user or {}).get("user_id") or (user or {}).get("id") or "",
+            (user or {}).get("role") or "",
+            self.client_ip(),
+            safe_fields,
+        )
 
 
 def main():
+    logging.basicConfig(
+        level=getattr(logging, CONFIG.log_level, logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    LOGGER.info("backend_start host=%s port=%s redmine_url=%s db_host=%s db_name=%s", CONFIG.host, CONFIG.port, CONFIG.redmine_url, CONFIG.db_host, CONFIG.db_name)
     DB.initialize()
     services.ensure_planner_schema(DB)
     services.migrate_team_config(DB)
     server = HTTPServer((CONFIG.host, CONFIG.port), TeamViewHandler)
-    print(f"Team View backend running at http://{CONFIG.host}:{CONFIG.port}")
-    print("API routes: /api/auth/*, /api/tasks, /api/teams, /api/redmine/*")
-    print("Redmine passthrough: /time_entries.json, /users.json, /issues.json, /issues/{id}.json")
+    LOGGER.info("backend_ready routes=/api/auth/*,/api/tasks,/api/teams,/api/redmine/* passthrough=/time_entries.json,/users.json,/issues.json,/issues/{id}.json")
     server.serve_forever()
+
+
+def redact_params(params):
+    return {
+        key: "[redacted]" if str(key).lower() in SENSITIVE_QUERY_KEYS else value
+        for key, value in dict(params).items()
+    }
 
 
 if __name__ == "__main__":

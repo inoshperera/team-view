@@ -56,6 +56,7 @@ const state = {
         orgLoadingParentId: null,
         orgChildTasks: new Map(),
         editorTask: null,
+        editorParentTaskId: null,
         linkedTicket: null
     },
     summaries: [],
@@ -66,6 +67,11 @@ const state = {
     detailMemberId: null,
     settingsOpen: false,
     previousView: "planner",
+    directoryWarnings: {
+        items: [],
+        dismissed: false,
+        expanded: false
+    },
     teamDraft: {
         teams: [],
         errors: [],
@@ -105,6 +111,9 @@ const state = {
         lastSuccessfulAt: null,
         message: ""
     },
+    confirmDialog: {
+        resolver: null
+    },
     refreshSeq: 0,
     statusFilter: "all"
 };
@@ -132,13 +141,21 @@ const els = {
     loginForm: document.getElementById("loginForm"),
     loginUsername: document.getElementById("loginUsername"),
     loginPassword: document.getElementById("loginPassword"),
+    loginSubmitButton: document.getElementById("loginSubmitButton"),
+    loginStatus: document.getElementById("loginStatus"),
     loginError: document.getElementById("loginError"),
+    appLoading: document.getElementById("appLoading"),
+    appLoadingTitle: document.getElementById("appLoadingTitle"),
+    appLoadingMessage: document.getElementById("appLoadingMessage"),
+    appLoadingProgress: document.getElementById("appLoadingProgress"),
     board: document.getElementById("teamBoard"),
     workBoard: document.getElementById("workBoard"),
     plannerBoard: document.getElementById("plannerBoard"),
     emptyState: document.getElementById("emptyState"),
     notice: document.getElementById("globalNotice"),
+    noticeMessage: document.getElementById("globalNoticeMessage"),
     noticeBar: document.getElementById("noticeBar"),
+    directoryWarningPanel: document.getElementById("directoryWarningPanel"),
     refreshButton: document.getElementById("refreshButton"),
     logoutButton: null,
     addPlannerTaskButton: document.getElementById("addPlannerTaskButton"),
@@ -234,9 +251,16 @@ const els = {
     plannerTaskStatus: document.getElementById("plannerTaskStatus"),
     plannerTaskProgress: document.getElementById("plannerTaskProgress"),
     plannerTaskStart: document.getElementById("plannerTaskStart"),
+    plannerTaskDueLabel: document.getElementById("plannerTaskDueLabel"),
     plannerTaskDue: document.getElementById("plannerTaskDue"),
     plannerSyncedPanel: document.getElementById("plannerSyncedPanel"),
-    plannerTaskMembers: document.getElementById("plannerTaskMembers")
+    plannerTaskMembers: document.getElementById("plannerTaskMembers"),
+    confirmModal: document.getElementById("confirmModal"),
+    confirmModalEyebrow: document.getElementById("confirmModalEyebrow"),
+    confirmModalTitle: document.getElementById("confirmModalTitle"),
+    confirmModalMessage: document.getElementById("confirmModalMessage"),
+    confirmCancelButton: document.getElementById("confirmCancelButton"),
+    confirmAcceptButton: document.getElementById("confirmAcceptButton")
 };
 
 async function init() {
@@ -260,18 +284,33 @@ async function init() {
         showLogin();
         return;
     }
-    await bootstrapAuthenticatedApp();
+    try {
+        showAppLoading("Loading workspace", "Checking your session and loading teams.", 12);
+        await bootstrapAuthenticatedApp();
+        hideAppLoading();
+        hideLogin();
+    } catch (error) {
+        state.auth.user = null;
+        hideAppLoading();
+        showLogin();
+        els.loginError.textContent = error.message || "Unable to load your workspace. Please sign in again.";
+        els.loginError.classList.remove("is-hidden");
+    }
 }
 
 async function bootstrapAuthenticatedApp() {
+    setAppLoading("Loading workspace", "Loading team and permission data.", 24);
     await loadPlannerBootstrap();
-    await loadPlannerProjects();
+    setAppLoading("Loading workspace", "Loading display settings.", 46);
     await loadWorkPhraseConfig();
+    setAppLoading("Loading workspace", "Loading team configuration.", 64);
     await loadTeamConfigFromFile();
     syncPlannerControls();
     syncWorkControls();
 
+    setAppLoading("Loading workspace", "Loading the selected view.", 82);
     await refreshActiveView();
+    setAppLoading("Loading workspace", "Ready.", 100);
 }
 
 async function loadPublicProxyConfig() {
@@ -313,7 +352,7 @@ async function loadTeamConfigFromFile() {
 
     state.teams = validateTeams(fileTeams.length > 0 ? fileTeams : state.config.teams, state.users);
     state.teamDraft = createTeamDraft(state.teams);
-    state.work.teamId = state.teams[0]?.id || "";
+    state.work.teamId = defaultWorkTeamId(state.work.teamId);
     state.work.memberIds = [];
     syncWorkControls();
 }
@@ -435,7 +474,13 @@ function validateTeams(teams, members) {
             : [];
         seenIds.add(id);
         seenNames.add(normalizedName);
-        valid.push({ id, name, memberIds: teamMemberIds });
+        valid.push({
+            id,
+            name,
+            parentTeamId: String(team.parentTeamId || team.parent_team_id || "").trim(),
+            isRoot: Boolean(team.isRoot),
+            memberIds: teamMemberIds
+        });
     }
 
     return valid;
@@ -445,6 +490,8 @@ function cloneTeams(teams) {
     return teams.map((team) => ({
         id: team.id,
         name: team.name,
+        parentTeamId: team.parentTeamId || "",
+        isRoot: Boolean(team.isRoot),
         memberIds: [...team.memberIds]
     }));
 }
@@ -468,6 +515,7 @@ function bindEvents() {
     els.addPlannerTaskButton.addEventListener("click", () => openPlannerEditor(null));
 
     els.refreshButton.addEventListener("click", refreshActiveView);
+    els.directoryWarningPanel.addEventListener("click", handleDirectoryWarningClick);
     els.viewSelect.addEventListener("change", handleViewChange);
     els.periodSelect.addEventListener("change", handlePeriodPresetChange);
     els.applyRangeButton.addEventListener("click", applyCustomRange);
@@ -490,7 +538,20 @@ function bindEvents() {
     els.cancelPlannerTaskButton.addEventListener("click", closePlannerEditor);
     els.deletePlannerTaskButton.addEventListener("click", deletePlannerTask);
     els.plannerTaskModal.addEventListener("submit", savePlannerTask);
+    els.confirmCancelButton.addEventListener("click", () => settleConfirmDialog(false));
+    els.confirmAcceptButton.addEventListener("click", () => settleConfirmDialog(true));
+    els.confirmModal.addEventListener("click", (event) => {
+        if (event.target === els.confirmModal) {
+            settleConfirmDialog(false);
+        }
+    });
+    document.addEventListener("keydown", (event) => {
+        if (!els.confirmModal.classList.contains("is-hidden") && event.key === "Escape") {
+            settleConfirmDialog(false);
+        }
+    });
     els.plannerTaskTeam.addEventListener("change", () => renderPlannerMemberPicker());
+    els.plannerTaskStatus.addEventListener("change", updatePlannerDueRequirement);
     els.plannerExtraFieldsButton.addEventListener("click", togglePlannerExtraFields);
     els.plannerTaskProjectSearch.addEventListener("input", handlePlannerProjectSearch);
     els.plannerTaskProjectSearch.addEventListener("change", handlePlannerProjectSearch);
@@ -514,15 +575,16 @@ async function restoreSession() {
     try {
         const payload = await apiJson("/api/auth/me");
         state.auth.user = payload.user;
-        hideLogin();
     } catch {
         state.auth.user = null;
     }
 }
 
 function showLogin() {
+    setLoginBusy(false);
     els.loginShell.classList.remove("is-hidden");
     document.querySelector(".app-shell").classList.add("is-hidden");
+    hideAppLoading();
 }
 
 function hideLogin() {
@@ -530,9 +592,36 @@ function hideLogin() {
     document.querySelector(".app-shell").classList.remove("is-hidden");
 }
 
+function showAppLoading(title = "Loading workspace", message = "Preparing your view.", progress = 8) {
+    const shell = document.querySelector(".app-shell");
+    shell.classList.remove("is-hidden");
+    shell.classList.add("is-loading");
+    setAppLoading(title, message, progress);
+    els.appLoading?.classList.remove("is-hidden");
+}
+
+function hideAppLoading() {
+    document.querySelector(".app-shell").classList.remove("is-loading");
+    els.appLoading?.classList.add("is-hidden");
+}
+
+function setAppLoading(title, message, progress) {
+    if (els.appLoadingTitle) {
+        els.appLoadingTitle.textContent = title || "Loading workspace";
+    }
+    if (els.appLoadingMessage) {
+        els.appLoadingMessage.textContent = message || "Preparing your view.";
+    }
+    if (els.appLoadingProgress) {
+        const percent = Math.max(8, Math.min(100, Number(progress) || 8));
+        els.appLoadingProgress.style.width = `${percent}%`;
+    }
+}
+
 async function handleLoginSubmit(event) {
     event.preventDefault();
     els.loginError.classList.add("is-hidden");
+    setLoginBusy(true, "Signing in.");
     try {
         const payload = await apiJson("/api/auth/login", {
             method: "POST",
@@ -542,12 +631,26 @@ async function handleLoginSubmit(event) {
             }
         });
         state.auth.user = payload.user;
+        setDirectoryWarnings(payload.directoryWarnings || [], { preserveDismissed: false });
         els.loginPassword.value = "";
-        hideLogin();
+        setLoginBusy(true, "Loading your workspace.");
         await bootstrapAuthenticatedApp();
+        hideLogin();
     } catch (error) {
+        setLoginBusy(false);
         els.loginError.textContent = error.message || "Unable to sign in.";
         els.loginError.classList.remove("is-hidden");
+    }
+}
+
+function setLoginBusy(isBusy, message = "") {
+    if (els.loginSubmitButton) {
+        els.loginSubmitButton.disabled = isBusy;
+        els.loginSubmitButton.textContent = isBusy ? "Please wait" : "Sign in";
+    }
+    if (els.loginStatus) {
+        els.loginStatus.textContent = message;
+        els.loginStatus.classList.toggle("is-hidden", !message);
     }
 }
 
@@ -560,10 +663,12 @@ async function handleLogout() {
 
 async function loadPlannerBootstrap() {
     const payload = await apiJson("/api/bootstrap");
+    setDirectoryWarnings([...(state.directoryWarnings.items || []), ...(payload.directoryWarnings || [])], { preserveDismissed: true });
     state.auth.user = payload.user;
     state.planner.teams = payload.teams || [];
     state.planner.users = payload.users || [];
     state.planner.projects = payload.projects || [];
+    state.planner.projectsLoadedFromRedmine = state.planner.projects.some((project) => project.source === "redmine");
     state.planner.categories = payload.categories || [];
     state.planner.priorities = payload.priorities || [];
     state.planner.statuses = payload.statuses || [];
@@ -575,10 +680,13 @@ async function loadPlannerBootstrap() {
     }));
     state.users = (payload.users || []).map((user) => ({
         id: user.redmineUserId || user.id,
+        redmineUserId: user.redmineUserId || null,
+        dbId: user.id,
         name: user.name,
         login: "",
         active: true,
-        dbId: user.id
+        teamId: user.teamId || "",
+        teamIds: Array.isArray(user.teamIds) ? user.teamIds : []
     }));
     state.members = state.users.map((user) => ({ id: user.redmineUserId || user.id, name: user.name, active: true }));
     if (state.auth.user?.role === "lead") {
@@ -587,16 +695,14 @@ async function loadPlannerBootstrap() {
             state.planner.filters.teamId = state.auth.user.teamId || state.planner.teams[0]?.id || "";
         }
     } else if (["manager", "admin"].includes(state.auth.user?.role)) {
-        const organizationTeam = state.planner.teams.find((team) => team.id === "organization");
-        if (organizationTeam) {
-            state.planner.filters.teamId = organizationTeam.id;
-        } else if (!state.planner.filters.teamId) {
-            state.planner.filters.teamId = "";
+        const validTeamIds = new Set(state.planner.teams.map((t) => t.id));
+        if (!validTeamIds.has(state.planner.filters.teamId) || isRootPlannerTeam(state.planner.filters.teamId)) {
+            state.planner.filters.teamId = defaultPlannerTeamId();
         }
     } else if (!state.planner.filters.teamId) {
         state.planner.filters.teamId = "";
     }
-    state.work.teamId = state.planner.filters.teamId || state.teams[0]?.id || "";
+    state.work.teamId = defaultWorkTeamId(state.planner.filters.teamId);
 }
 
 async function loadPlannerProjects() {
@@ -637,10 +743,9 @@ function syncPlannerControls() {
     const canSeeAllTeams = ["manager", "admin"].includes(state.auth.user?.role);
     const isOrganizationScope = isOrganizationPlannerScope();
     els.plannerTeamField.classList.toggle("is-hidden", !canSeeAllTeams);
-    els.plannerTeamFilter.innerHTML = `<option value="">All team level</option>${sortedPlannerTeams().map((team) => {
-        const prefix = team.parentTeamId ? "\u2514 " : "";
-        return `<option value="${escapeHtml(team.id)}">${escapeHtml(prefix + team.name)}</option>`;
-    }).join("")}`;
+    els.plannerTeamFilter.innerHTML = `${teamOptionItems(state.planner.teams).map(({ team, depth }) => {
+        return `<option value="${escapeHtml(team.id)}">${escapeHtml(teamOptionLabel(team, depth))}</option>`;
+    }).join("")}<option value="">All team level</option>`;
     els.plannerTeamFilter.value = state.planner.filters.teamId;
     els.plannerMemberField.classList.toggle("is-hidden", isOrganizationScope);
     els.plannerFilterButton.classList.toggle("is-hidden", isOrganizationScope);
@@ -672,18 +777,76 @@ function filteredPlannerUsersForTeam(teamId) {
 }
 
 function sortedPlannerTeams() {
-    return [...state.planner.teams].sort((a, b) => {
-        if (a.id === "organization") return -1;
-        if (b.id === "organization") return 1;
-        return String(a.name || a.id).localeCompare(String(b.name || b.id));
+    return teamOptionItems(state.planner.teams).map((item) => item.team);
+}
+
+function teamOptionItems(teams) {
+    const items = Array.isArray(teams) ? teams : [];
+    const byId = new Map(items.map((team) => [String(team.id), team]));
+    const byParent = new Map();
+    items.forEach((team) => {
+        const parentId = String(team.parentTeamId || "");
+        const effectiveParentId = parentId && byId.has(parentId) ? parentId : "";
+        if (!byParent.has(effectiveParentId)) {
+            byParent.set(effectiveParentId, []);
+        }
+        byParent.get(effectiveParentId).push(team);
     });
+    byParent.forEach((siblings) => {
+        siblings.sort((a, b) => {
+            if (a.isRoot && !b.isRoot) return -1;
+            if (b.isRoot && !a.isRoot) return 1;
+            return String(a.name || a.id).localeCompare(String(b.name || b.id));
+        });
+    });
+    const ordered = [];
+    const visit = (parentId, depth) => {
+        for (const team of byParent.get(parentId) || []) {
+            ordered.push({ team, depth });
+            visit(String(team.id), depth + 1);
+        }
+    };
+    visit("", 0);
+    return ordered;
+}
+
+function teamOptionLabel(team, depth) {
+    return `${depth > 0 ? `${"  ".repeat(Math.max(0, depth - 1))}\u2514 ` : ""}${teamDisplayName(team)}`;
+}
+
+function teamDisplayName(team) {
+    const name = team?.name || team?.id || "";
+    return name === "Entgra" ? "Entgra(Sumedha)" : name;
+}
+
+function defaultPlannerTeamId() {
+    const authTeamId = state.auth.user?.teamId || "";
+    if (authTeamId && state.planner.teams.some((team) => team.id === authTeamId) && !isRootPlannerTeam(authTeamId)) {
+        return authTeamId;
+    }
+    const firstNonRoot = sortedPlannerTeams().find((team) => !isRootPlannerTeam(team.id));
+    if (firstNonRoot) {
+        return firstNonRoot.id;
+    }
+    return authTeamId || sortedPlannerTeams()[0]?.id || "";
+}
+
+function defaultWorkTeamId(preferredTeamId = "") {
+    if (preferredTeamId && state.teams.some((team) => team.id === preferredTeamId && !isRootWorkTeam(team.id))) {
+        return preferredTeamId;
+    }
+    const authTeamId = state.auth.user?.teamId || "";
+    if (authTeamId && state.teams.some((team) => team.id === authTeamId && !isRootWorkTeam(team.id))) {
+        return authTeamId;
+    }
+    return teamOptionItems(state.teams).find(({ team }) => !isRootWorkTeam(team.id))?.team.id || state.teams[0]?.id || "";
 }
 
 function updatePlannerFilter(key, value) {
     state.planner.filters[key] = value;
     if (key === "teamId") {
         state.planner.filters.memberId = "";
-        if (value === "organization") {
+        if (isRootPlannerTeam(value)) {
             state.planner.filters.category = "";
             state.planner.filters.priority = "";
             state.planner.filters.q = "";
@@ -696,7 +859,16 @@ function updatePlannerFilter(key, value) {
 }
 
 function togglePlannerAdvancedFilters() {
-    state.planner.advancedFiltersOpen = !state.planner.advancedFiltersOpen;
+    if (state.planner.advancedFiltersOpen) {
+        state.planner.filters.category = "";
+        state.planner.filters.priority = "";
+        state.planner.filters.q = "";
+        state.planner.advancedFiltersOpen = false;
+        syncPlannerControls();
+        refreshPlanner();
+        return;
+    }
+    state.planner.advancedFiltersOpen = true;
     syncPlannerControls();
 }
 
@@ -725,6 +897,9 @@ function closeNonePriorityTasksFirst() {
 
 function handleViewChange() {
     state.view = els.viewSelect.value;
+    if (!["planner", "work-overview"].includes(state.view)) {
+        state.view = "planner";
+    }
     state.settingsOpen = false;
     closeDetailView();
     render();
@@ -849,13 +1024,21 @@ function clearPeriodError() {
 }
 
 function renderStaticHeader() {
+    const title = document.querySelector(".topbar-brand h1");
     if (state.view === "planner") {
         const teamName = state.planner.teams.find((team) => team.id === state.planner.filters.teamId)?.name;
+        if (title) title.textContent = "Team Activity Overview";
         els.workingDayLabel.textContent = state.auth.user?.role === "lead"
             ? `High-level work · ${teamName || "Team"}`
             : `Management view · ${state.planner.teams.length} teams`;
         return;
     }
+    if (state.view === "settings") {
+        if (title) title.textContent = "Team Settings";
+        els.workingDayLabel.textContent = "Directory-synced teams";
+        return;
+    }
+    if (title) title.textContent = "Team Activity Overview";
     els.workingDayLabel.textContent = state.view === "work-overview"
         ? `Redmine Overview · ${describeWorkScope()}`
         : `Period ${state.period.label}`;
@@ -941,6 +1124,75 @@ function setRefreshState(nextState, message) {
     }
 }
 
+function confirmAction(options = {}) {
+    if (state.confirmDialog.resolver) {
+        settleConfirmDialog(false);
+    }
+    const tone = options.tone || "default";
+    els.confirmModal.dataset.tone = tone;
+    els.confirmModalEyebrow.textContent = options.eyebrow || (tone === "danger" ? "Destructive action" : "Confirm action");
+    els.confirmModalTitle.textContent = options.title || "Are you sure?";
+    els.confirmModalMessage.textContent = options.message || "This action needs confirmation.";
+    els.confirmCancelButton.textContent = options.cancelLabel || "Cancel";
+    els.confirmAcceptButton.textContent = options.confirmLabel || "Confirm";
+    els.confirmModal.classList.remove("is-hidden");
+    els.confirmCancelButton.focus();
+    return new Promise((resolve) => {
+        state.confirmDialog.resolver = resolve;
+    });
+}
+
+function settleConfirmDialog(confirmed) {
+    if (!state.confirmDialog.resolver) {
+        return;
+    }
+    const resolve = state.confirmDialog.resolver;
+    state.confirmDialog.resolver = null;
+    els.confirmModal.classList.add("is-hidden");
+    resolve(confirmed);
+}
+
+function setDirectoryWarnings(warnings, options = {}) {
+    const seen = new Set();
+    const items = [];
+    (warnings || []).forEach((warning) => {
+        const key = `${warning.type || ""}:${warning.title || ""}:${warning.message || ""}`;
+        if (seen.has(key)) {
+            return;
+        }
+        seen.add(key);
+        items.push({
+            type: warning.type || "directory_warning",
+            severity: warning.severity || "warning",
+            title: warning.title || "Directory warning",
+            message: warning.message || "",
+            items: Array.isArray(warning.items) ? warning.items : []
+        });
+    });
+    state.directoryWarnings.items = items;
+    if (!options.preserveDismissed) {
+        state.directoryWarnings.dismissed = false;
+    }
+    if (!items.length) {
+        state.directoryWarnings.dismissed = false;
+        state.directoryWarnings.expanded = false;
+    }
+}
+
+function handleDirectoryWarningClick(event) {
+    const action = event.target.closest("[data-directory-warning-action]")?.dataset.directoryWarningAction;
+    if (!action) {
+        return;
+    }
+    if (action === "dismiss") {
+        state.directoryWarnings.dismissed = true;
+    }
+    if (action === "toggle") {
+        state.directoryWarnings.expanded = !state.directoryWarnings.expanded;
+    }
+    renderDirectoryWarnings();
+}
+
 function handleWorkScopeModeChange() {
     state.work.mode = els.workScopeMode.value;
     if (state.work.mode === "users") {
@@ -981,12 +1233,12 @@ function syncWorkControls() {
 
 function renderTeamOptions() {
     els.workTeamSelect.innerHTML = state.teams.length
-        ? state.teams.map((team) => `<option value="${escapeHtml(team.id)}">${escapeHtml(team.name)}</option>`).join("")
+        ? teamOptionItems(state.teams).map(({ team, depth }) => `<option value="${escapeHtml(team.id)}">${escapeHtml(teamOptionLabel(team, depth))}</option>`).join("")
         : `<option value="">No teams configured</option>`;
     if (state.work.teamId && state.teams.some((team) => team.id === state.work.teamId)) {
         els.workTeamSelect.value = state.work.teamId;
     } else {
-        state.work.teamId = state.teams[0]?.id || "";
+        state.work.teamId = defaultWorkTeamId();
         els.workTeamSelect.value = state.work.teamId;
     }
 }
@@ -1025,15 +1277,36 @@ function renderUserPicker() {
 
 function resolveWorkMembers() {
     if (state.work.mode === "team") {
-        const team = state.teams.find((item) => item.id === state.work.teamId);
-        const teamIds = new Set(team?.memberIds || []);
-        return state.users.filter((member) => teamIds.has(member.id));
+        const teamIds = teamAndDescendantIds(state.work.teamId);
+        return state.users.filter((member) => {
+            const memberTeamIds = Array.isArray(member.teamIds) ? member.teamIds : [];
+            return member.redmineUserId && memberTeamIds.some((teamId) => teamIds.has(teamId));
+        });
     }
     if (state.work.mode === "users") {
         const selectedIds = new Set(state.work.memberIds);
-        return state.users.filter((member) => selectedIds.has(member.id));
+        return state.users.filter((member) => member.redmineUserId && selectedIds.has(member.id));
     }
     return [];
+}
+
+function teamAndDescendantIds(teamId) {
+    const rootId = String(teamId || "");
+    if (!rootId) {
+        return new Set();
+    }
+    const ids = new Set([rootId]);
+    let changed = true;
+    while (changed) {
+        changed = false;
+        for (const team of state.teams) {
+            if (!ids.has(team.id) && team.parentTeamId && ids.has(team.parentTeamId)) {
+                ids.add(team.id);
+                changed = true;
+            }
+        }
+    }
+    return ids;
 }
 
 function describeWorkScope() {
@@ -1120,14 +1393,39 @@ async function loadTeamMgmt() {
     renderTeamMgmt();
 }
 
+async function refreshDirectoryFromSettings() {
+    const button = document.getElementById("newTeamButton");
+    if (button) {
+        button.disabled = true;
+        button.textContent = "Refreshing...";
+    }
+    try {
+        const result = await apiJson("/api/sync/directory", { method: "POST" });
+        setDirectoryWarnings(result.warnings || [], { preserveDismissed: false });
+        await loadPlannerBootstrap();
+        await loadTeamMgmt();
+        syncPlannerControls();
+        render();
+    } catch (err) {
+        alert(err.message || "Failed to refresh the organization directory.");
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.textContent = "Refresh directory";
+        }
+    }
+}
+
 function renderTeamMgmt() {
     const shell = els.teamMgmtShell;
     if (!shell) return;
-    // bind new team button each render
     const newBtn = document.getElementById("newTeamButton");
     if (newBtn && !newBtn._bound) {
         newBtn._bound = true;
-        newBtn.addEventListener("click", startNewTeamWizard);
+        newBtn.addEventListener("click", refreshDirectoryFromSettings);
+    }
+    if (newBtn) {
+        newBtn.classList.toggle("is-hidden", state.auth.user?.role !== "manager");
     }
     if (state.teamMgmt.loading) {
         shell.innerHTML = `<div style="padding:24px;color:var(--muted)">Loading teams…</div>`;
@@ -1199,18 +1497,12 @@ function renderTeamDetailHtml() {
         return `
             <div class="team-detail-empty">
                 <h3>Select a team to view details</h3>
-                <p>Or click <strong>+ New team</strong> to create one.</p>
+                <p>Teams and members are synced from the organization directory.</p>
             </div>
         `;
     }
-    const renaming = state.teamMgmt.renaming;
-    const nameHtml = renaming
-        ? `<input class="team-rename-input" id="teamRenameInput" value="${escapeHtml(team.name)}" type="text">`
-        : `<h2>${escapeHtml(team.name)}</h2>`;
-    const editingProjects = state.teamMgmt.editingProjects;
-    const projectsHtml = editingProjects
-        ? renderEditProjectsHtml(team)
-        : ((team.projects || []).length
+    const nameHtml = `<h2>${escapeHtml(team.name)}</h2>`;
+    const projectsHtml = ((team.projects || []).length
             ? `<div class="project-chips">${(team.projects || []).map((p) => `
                 <span class="project-chip">
                     <span class="project-chip-badge">${escapeHtml(p.badge)}</span>
@@ -1218,20 +1510,19 @@ function renderTeamDetailHtml() {
                 </span>`).join("")}</div>`
             : `<span style="color:var(--muted);font-size:0.88rem">No projects assigned.</span>`);
 
-    const changingLead = state.teamMgmt.changingLead;
-    const leadHtml = changingLead
-        ? renderChangeLeadHtml(team)
-        : (team.leadUser
-            ? `<div class="team-lead-card">
-                ${userAvatarHtml(team.leadUser, 40)}
+    const leadUsers = (team.leadUsers && team.leadUsers.length)
+        ? team.leadUsers
+        : (team.leadUser ? [team.leadUser] : []);
+    const leadHtml = leadUsers.length
+            ? leadUsers.map((lead) => `<div class="team-lead-card">
+                ${userAvatarHtml(lead, 40)}
                 <div class="team-lead-info">
-                    <div class="team-lead-name">${escapeHtml(team.leadUser.name)}</div>
-                    <div class="team-lead-title">${escapeHtml(team.leadUser.role || "Lead")}</div>
-                    <div class="team-lead-email">${escapeHtml(team.leadUser.email || "")}</div>
+                    <div class="team-lead-name">${escapeHtml(lead.name)}</div>
+                    <div class="team-lead-title">${escapeHtml(lead.role || "Lead")}</div>
+                    <div class="team-lead-email">${escapeHtml(lead.email || "")}</div>
                 </div>
-                <button class="btn-yellow" id="changeLeadBtn" type="button">Change lead</button>
-              </div>`
-            : `<div class="team-lead-empty">No lead assigned. <button class="btn-yellow" id="changeLeadBtn" type="button">Assign lead</button></div>`);
+              </div>`).join("")
+            : `<div class="team-lead-empty">No lead assigned in the organization directory.</div>`;
 
     const membersRows = (team.members || []).map((m) => `
         <tr>
@@ -1246,7 +1537,7 @@ function renderTeamDetailHtml() {
             </td>
             <td>${escapeHtml(m.role || "member")}</td>
             <td><span class="position-chip ${m.position === "Lead" ? "position-chip-lead" : "position-chip-member"}">${escapeHtml(m.position)}</span></td>
-            <td><button class="table-action-btn danger" data-remove-member="${m.id}" type="button">Remove</button></td>
+            <td></td>
         </tr>
     `).join("");
     return `
@@ -1262,19 +1553,14 @@ function renderTeamDetailHtml() {
                 </div>
             </div>
             <div class="team-detail-header-actions">
-                ${renaming
-                    ? `<button class="btn-primary" id="saveRenameBtn" type="button">Save</button>
-                       <button class="secondary-button" id="cancelRenameBtn" type="button">Cancel</button>`
-                    : `<button class="secondary-button" id="renameTeamBtn" type="button">Rename</button>
-                       <button class="secondary-button danger-button" id="deleteTeamBtn" type="button">Delete</button>`
-                }
+                <span class="team-readonly-note">Synced from directory</span>
             </div>
         </div>
         ${team.description ? `<div class="team-section"><p class="team-section-desc">${escapeHtml(team.description)}</p></div>` : ""}
         <div class="team-section">
             <div class="team-section-head">
                 <span class="team-section-title">OWNING PROJECTS ${(team.projects || []).length}</span>
-                ${!editingProjects ? `<button class="secondary-button team-section-action" id="editProjectsBtn" type="button">Edit projects</button>` : ""}
+                <span class="team-section-note">Read-only</span>
             </div>
             ${projectsHtml}
         </div>
@@ -1285,7 +1571,7 @@ function renderTeamDetailHtml() {
         <div class="team-section">
             <div class="team-section-head">
                 <span class="team-section-title">MEMBERS ${(team.members || []).length}</span>
-                <button class="secondary-button team-section-action" id="addMemberBtn" type="button">+ Add member</button>
+                <span class="team-section-note">Read-only</span>
             </div>
             ${membersRows
                 ? `<table class="members-table">
@@ -1369,7 +1655,14 @@ function bindTeamDetailEvents() {
         deleteBtn.addEventListener("click", async () => {
             const team = state.teamMgmt.selectedTeam;
             if (!team) return;
-            if (!confirm(`Delete team "${team.name}"? This cannot be undone.`)) return;
+            const confirmed = await confirmAction({
+                tone: "danger",
+                title: "Delete team?",
+                message: `Delete "${team.name}"? This cannot be undone.`,
+                confirmLabel: "Delete team",
+                cancelLabel: "Keep team"
+            });
+            if (!confirmed) return;
             try {
                 await apiJson(`/api/teams/${team.id}`, { method: "DELETE" });
                 state.teamMgmt.selectedTeamId = null;
@@ -1503,7 +1796,14 @@ function bindTeamDetailEvents() {
         btn.addEventListener("click", async () => {
             const userId = btn.dataset.removeMember;
             if (!state.teamMgmt.selectedTeamId) return;
-            if (!confirm("Remove this member from the team?")) return;
+            const confirmed = await confirmAction({
+                tone: "danger",
+                title: "Remove member?",
+                message: "Remove this member from the team?",
+                confirmLabel: "Remove member",
+                cancelLabel: "Keep member"
+            });
+            if (!confirmed) return;
             try {
                 const payload = await apiJson(`/api/teams/${state.teamMgmt.selectedTeamId}/members/${userId}`, { method: "DELETE" });
                 state.teamMgmt.selectedTeam = payload.team;
@@ -2152,7 +2452,7 @@ function applyValidTeamDraft() {
     state.teams = cloneTeams(state.teamDraft.teams);
     state.work.teamId = state.teams.some((team) => team.id === state.work.teamId)
         ? state.work.teamId
-        : state.teams[0]?.id || "";
+        : defaultWorkTeamId();
 }
 
 function slugify(value) {
@@ -2665,6 +2965,7 @@ function hasSuspiciousTiming(row) {
 function render() {
     renderViewShell();
     renderRefreshState();
+    renderDirectoryWarnings();
     if (state.view === "settings") {
         // team mgmt renders itself once data is loaded via loadTeamMgmt / renderTeamMgmt
     } else if (state.view === "planner") {
@@ -2677,6 +2978,42 @@ function render() {
         renderBoard();
         renderDetailView();
     }
+}
+
+function renderDirectoryWarnings() {
+    const panel = els.directoryWarningPanel;
+    if (!panel) {
+        return;
+    }
+    const items = state.directoryWarnings.items || [];
+    const hidden = state.directoryWarnings.dismissed || !items.length || state.view === "settings";
+    panel.classList.toggle("is-hidden", hidden);
+    if (hidden) {
+        panel.innerHTML = "";
+        return;
+    }
+    const expanded = state.directoryWarnings.expanded;
+    const primary = items[0];
+    const detailRows = items.map((item) => `
+        <div class="directory-warning-item directory-warning-${escapeHtml(item.severity)}">
+            <strong>${escapeHtml(item.title)}</strong>
+            <span>${escapeHtml(item.message)}</span>
+            ${item.items?.length ? `<ul>${item.items.map((entry) => `<li>${escapeHtml(entry)}</li>`).join("")}</ul>` : ""}
+        </div>
+    `).join("");
+    panel.innerHTML = `
+        <div class="directory-warning-head">
+            <div>
+                <strong>${escapeHtml(primary.title)}</strong>
+                <span>${escapeHtml(primary.message)}</span>
+            </div>
+            <div class="directory-warning-actions">
+                <button class="secondary-button" type="button" data-directory-warning-action="toggle">${expanded ? "Collapse" : `Details (${items.length})`}</button>
+                <button class="secondary-button" type="button" data-directory-warning-action="dismiss">Close</button>
+            </div>
+        </div>
+        ${expanded ? `<div class="directory-warning-body">${detailRows}</div>` : ""}
+    `;
 }
 
 function renderViewShell() {
@@ -2716,12 +3053,14 @@ function renderRefreshState() {
     els.refreshButton.classList.toggle("is-spinning", isLoading);
     renderStaticHeader();
 
-    if (!state.refresh.message) {
+    if (!state.refresh.message || state.view === "settings") {
         els.notice.classList.add("is-hidden");
+        els.noticeBar.classList.add("is-hidden");
+        els.noticeMessage.innerHTML = "";
         return;
     }
 
-    els.notice.innerHTML = state.refresh.state === "loading"
+    els.noticeMessage.innerHTML = state.refresh.state === "loading"
         ? `<span class="spinner" aria-hidden="true"></span><span>${escapeHtml(state.refresh.message)}</span>`
         : escapeHtml(state.refresh.message);
     els.notice.dataset.tone = state.refresh.state === "failed"
@@ -2734,6 +3073,7 @@ function renderRefreshState() {
                     ? "partial"
                     : "success";
     els.notice.classList.remove("is-hidden");
+    els.noticeBar.classList.remove("is-hidden");
 }
 
 function renderCounts() {
@@ -2780,7 +3120,7 @@ function renderPlannerUserChip() {
             <span class="planner-user-role">${escapeHtml(roleLabel)}</span>
         </button>
         <div class="user-menu is-hidden" id="userMenu">
-            <button class="user-menu-item" type="button" id="userMenuSettings">Settings</button>
+            <button class="user-menu-item" type="button" id="userMenuSettings">Team Details</button>
             <button class="user-menu-item" type="button" id="userMenuLogout">Sign out</button>
         </div>
     `;
@@ -2824,38 +3164,21 @@ function renderPlanner() {
     if (state.planner.nonePriorityFirst) {
         els.plannerBoard.classList.add("is-list");
         els.plannerBoard.classList.remove("is-lanes", "is-organization-list");
-        const listTasks = nonePrioritySortedTasks(tasks);
+        const listTasks = nonePrioritySortedTasks(openTasks);
         els.plannerBoard.innerHTML = `
             <div class="planner-none-list-banner">
                 <div>
-                    <strong>None priority tasks</strong>
-                    <span>Shown first so they can be triaged into a real priority.</span>
+                    <strong>No priority tasks</strong>
+                    <span>${listTasks.length ? "Shown first so they can be triaged into a real priority." : "There are no no-priority tasks in the current view."}</span>
                 </div>
                 <button class="secondary-button" id="closeNonePriorityListButton" type="button">Close</button>
             </div>
-            ${listTasks.map(renderPlannerTaskCard).join("")}
+            ${listTasks.length ? listTasks.map(renderPlannerTaskCard).join("") : `<div class="empty-state planner-empty"><h2>No non priority tasks</h2><p>The current team and filter selection has no open tasks without a priority.</p></div>`}
         `;
-    } else if (isOrganizationPlannerScope()) {
+    } else {
         els.plannerBoard.classList.add("is-list", "is-organization-list");
         els.plannerBoard.classList.remove("is-lanes");
         els.plannerBoard.innerHTML = renderOrganizationPriorityLists(tasks);
-    } else {
-        els.plannerBoard.classList.add("is-lanes");
-        els.plannerBoard.classList.remove("is-list", "is-organization-list");
-        els.plannerBoard.innerHTML = plannerLaneItems().map((lane) => {
-            const laneTasks = tasks.filter((task) => state.planner.groupMode === "priority" ? task.priorityId === lane.id : task.categoryId === lane.id);
-            return `
-                <section class="planner-lane ${escapeHtml(lane.colorClass || "")}">
-                    <div class="planner-lane-title">
-                        <span>${escapeHtml(lane.label)}</span>
-                        <span class="lane-count">${laneTasks.length}</span>
-                    </div>
-                    <div class="planner-lane-stack">
-                        ${laneTasks.length ? laneTasks.map(renderPlannerTaskCard).join("") : `<div class="empty-mini">No tasks</div>`}
-                    </div>
-                </section>
-            `;
-        }).join("");
     }
 
     els.plannerBoard.querySelector("#closeNonePriorityListButton")?.addEventListener("click", closeNonePriorityTasksFirst);
@@ -2870,11 +3193,11 @@ function renderPlanner() {
             const taskId = button.dataset.plannerDelete;
             const task = findPlannerTaskById(taskId);
             if (!task) return;
-            if (!confirm(`Delete "${task.title}"?`)) return;
+            const confirmed = await confirmDeletePlannerTask(task);
+            if (!confirmed) return;
             try {
                 await apiJson(`/api/tasks/${taskId}`, { method: "DELETE" });
-                invalidateOrgChildCache(task.parentTaskId);
-                await refreshPlanner();
+                await refreshPlannerAfterTaskMutation(task.parentTaskId);
             } catch (error) {
                 alert(error.message || "Failed to delete task.");
             }
@@ -2895,6 +3218,14 @@ function renderPlanner() {
                 return;
             }
             await toggleOrganizationTaskChildren(row.dataset.orgExpand);
+        });
+    });
+    els.plannerBoard.querySelectorAll("[data-org-add-child]").forEach((button) => {
+        button.addEventListener("click", () => {
+            const parent = findPlannerTaskById(button.dataset.orgAddChild);
+            if (parent) {
+                openPlannerEditor(null, { parentTask: parent });
+            }
         });
     });
 }
@@ -2922,20 +3253,26 @@ async function toggleOrganizationTaskChildren(taskId) {
         return;
     }
     state.planner.expandedOrgTaskId = id;
-    if (!state.planner.orgChildTasks.has(id)) {
-        state.planner.orgLoadingParentId = id;
-        renderPlanner();
-        try {
-            const payload = await apiJson(`/api/tasks?parent_task_id=${encodeURIComponent(id)}`);
-            state.planner.orgChildTasks.set(id, payload.tasks || []);
-        } catch (error) {
-            state.planner.orgChildTasks.set(id, []);
-            alert(error.message || "Unable to load child tasks.");
-        } finally {
-            state.planner.orgLoadingParentId = null;
-        }
-    }
+    await loadOrganizationTaskChildren(id);
     renderPlanner();
+}
+
+async function loadOrganizationTaskChildren(parentTaskId, options = {}) {
+    const id = String(parentTaskId || "");
+    if (!id || (!options.force && state.planner.orgChildTasks.has(id))) {
+        return;
+    }
+    state.planner.orgLoadingParentId = id;
+    renderPlanner();
+    try {
+        const payload = await apiJson(`/api/tasks?parent_task_id=${encodeURIComponent(id)}`);
+        state.planner.orgChildTasks.set(id, payload.tasks || []);
+    } catch (error) {
+        state.planner.orgChildTasks.set(id, []);
+        alert(error.message || "Unable to load child tasks.");
+    } finally {
+        state.planner.orgLoadingParentId = null;
+    }
 }
 
 function invalidateOrgChildCache(parentTaskId) {
@@ -2945,13 +3282,24 @@ function invalidateOrgChildCache(parentTaskId) {
     state.planner.orgChildTasks.delete(String(parentTaskId));
 }
 
+async function refreshPlannerAfterTaskMutation(parentTaskId) {
+    const expandedParentId = parentTaskId && String(state.planner.expandedOrgTaskId || "") === String(parentTaskId)
+        ? String(parentTaskId)
+        : "";
+    invalidateOrgChildCache(parentTaskId);
+    if (expandedParentId) {
+        state.planner.orgLoadingParentId = expandedParentId;
+    }
+    await refreshPlanner();
+    if (expandedParentId) {
+        state.planner.expandedOrgTaskId = expandedParentId;
+        await loadOrganizationTaskChildren(expandedParentId, { force: true });
+        renderPlanner();
+    }
+}
+
 function nonePrioritySortedTasks(tasks) {
-    return [...tasks].sort((a, b) => {
-        const aNone = a.priorityId === "none" ? 0 : 1;
-        const bNone = b.priorityId === "none" ? 0 : 1;
-        if (aNone !== bNone) {
-            return aNone - bNone;
-        }
+    return tasks.filter((task) => task.priorityId === "none").sort((a, b) => {
         return String(a.dueDate || "9999-99-99").localeCompare(String(b.dueDate || "9999-99-99"));
     });
 }
@@ -2963,7 +3311,17 @@ function plannerLaneItems() {
 }
 
 function isOrganizationPlannerScope() {
-    return state.planner.filters.teamId === "organization";
+    return isRootPlannerTeam(state.planner.filters.teamId);
+}
+
+function isRootPlannerTeam(teamId) {
+    const team = state.planner.teams.find((item) => item.id === teamId);
+    return Boolean(team && (team.isRoot || !team.parentTeamId));
+}
+
+function isRootWorkTeam(teamId) {
+    const team = state.teams.find((item) => item.id === teamId);
+    return Boolean(team && !team.parentTeamId);
 }
 
 function organizationSortedTasks(tasks) {
@@ -2978,18 +3336,18 @@ function organizationSortedTasks(tasks) {
 }
 
 function renderOrganizationPriorityLists(tasks) {
-    const grouped = state.planner.priorities
-        .filter((priority) => priority.id !== "none")
-        .map((priority) => ({
-            priority,
-            tasks: organizationSortedTasks(tasks.filter((task) => task.priorityId === priority.id))
+    const groupKey = state.planner.groupMode === "category" ? "categoryId" : "priorityId";
+    const grouped = plannerLaneItems()
+        .map((item) => ({
+            item,
+            tasks: organizationSortedTasks(tasks.filter((task) => task[groupKey] === item.id))
         }))
         .filter((group) => group.tasks.length > 0);
-    return grouped.map(({ priority, tasks }) => `
-        <section class="org-priority-section ${escapeHtml(priority.colorClass || "")}">
+    return grouped.map(({ item, tasks }) => `
+        <section class="org-priority-section ${escapeHtml(item.colorClass || "")}">
             <div class="org-priority-title">
-                <span class="priority-dot ${escapeHtml(priority.colorClass || "")}"></span>
-                <span>${escapeHtml(priority.label)}</span>
+                <span class="priority-dot ${escapeHtml(item.colorClass || "")}"></span>
+                <span>${escapeHtml(item.label)}</span>
                 <span class="lane-count">${tasks.length}</span>
             </div>
             <div class="org-task-list">
@@ -3004,7 +3362,7 @@ function renderOrganizationTaskRow(task) {
     const category = lookup(state.planner.categories, task.categoryId);
     const status = lookup(state.planner.statuses, task.statusId);
     const team = lookup(state.planner.teams, task.teamId);
-    const showTeamChip = team && team.id !== "organization";
+    const showTeamChip = team && !team.isRoot;
     const progress = clampProgress(task.progress);
     const memberIcons = (task.members || []).map((member) => `
         <span class="mini-avatar ${escapeHtml(member.avatarColor || "")}" title="${escapeHtml(member.name)}">${escapeHtml(member.initials || initialsFromName(member.name))}</span>
@@ -3018,6 +3376,12 @@ function renderOrganizationTaskRow(task) {
             ${isLoading ? `<div class="empty-mini">Loading linked team tasks...</div>` : ""}
             ${!isLoading && children.length ? children.map(renderOrganizationChildTaskRow).join("") : ""}
             ${!isLoading && !children.length ? `<div class="empty-mini">No linked team tasks yet.</div>` : ""}
+            ${!isLoading ? `
+                <button class="org-child-add-button" type="button" data-org-add-child="${escapeHtml(task.id)}">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+                    Add linked team task
+                </button>
+            ` : ""}
         </div>
     ` : "";
     const progressMarkup = task.redmineLinked
@@ -3173,8 +3537,7 @@ async function editPlannerTaskProgress(task) {
                 memberIds: task.memberIds || []
             }
         });
-        invalidateOrgChildCache(task.parentTaskId);
-        await refreshPlanner();
+        await refreshPlannerAfterTaskMutation(task.parentTaskId);
     } catch (error) {
         alert(error.message || "Unable to update progress.");
     }
@@ -3549,14 +3912,20 @@ function renderDetailRow(row) {
     `;
 }
 
-async function openPlannerEditor(task) {
+async function openPlannerEditor(task, options = {}) {
     if (!state.planner.projectsLoadedFromRedmine) {
         await loadPlannerProjects();
     }
+    const parentTask = options.parentTask || null;
     state.planner.editorTask = task ? { ...task } : null;
+    state.planner.editorParentTaskId = task?.parentTaskId || parentTask?.id || null;
     state.planner.linkedTicket = task?.redmineLinked ? task : null;
-    els.plannerTaskEyebrow.textContent = task ? `Edit task · ${task.teamId}` : "New task";
-    els.plannerTaskTitle.textContent = task ? "Edit high-level task" : "Add high-level task";
+    els.plannerTaskEyebrow.textContent = task
+        ? `Edit task · ${task.teamId}`
+        : parentTask
+            ? `New linked team task · ${parentTask.title}`
+            : "New task";
+    els.plannerTaskTitle.textContent = task ? "Edit high-level task" : parentTask ? "Add linked team task" : "Add high-level task";
     els.savePlannerTaskButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>${task ? " Save changes" : " Create task"}`;
     els.deletePlannerTaskButton.classList.toggle("is-hidden", !task);
     fillPlannerEditorOptions(task);
@@ -3564,14 +3933,15 @@ async function openPlannerEditor(task) {
     syncPlannerExtraFields();
     els.plannerTaskTitleInput.value = task?.title || "";
     els.plannerTaskDescription.value = task?.description || "";
-    els.plannerTaskTeam.value = task?.teamId || defaultPlannerEditorTeamId();
+    els.plannerTaskTeam.value = task?.teamId || defaultPlannerEditorTeamId(parentTask);
     setPlannerProjectValue(task?.projectId || "");
     setPlannerChoiceValue("category", task?.categoryId || "dev");
     setPlannerChoiceValue("priority", task?.priorityId || "medium");
-    els.plannerTaskStatus.value = task?.statusId || "working";
+    els.plannerTaskStatus.value = task?.statusId || "new";
     els.plannerTaskProgress.value = task?.progress || 0;
     els.plannerTaskStart.value = task?.startDate || formatLocalDate(new Date());
     els.plannerTaskDue.value = task?.dueDate || "";
+    updatePlannerDueRequirement();
     els.plannerTaskRedmineSearch.value = task?.issueKey || task?.redmineIssueId || "";
     renderPlannerSyncedPanel();
     renderPlannerMemberPicker(task?.memberIds || []);
@@ -3582,6 +3952,7 @@ async function openPlannerEditor(task) {
 
 function closePlannerEditor() {
     state.planner.editorTask = null;
+    state.planner.editorParentTaskId = null;
     state.planner.linkedTicket = null;
     els.plannerTaskModal.classList.add("is-hidden");
 }
@@ -3591,18 +3962,43 @@ function fillPlannerEditorOptions(task) {
     els.plannerTaskTeam.disabled = !canPickTeam;
     const teamWrap = document.getElementById("teamFieldWrap");
     if (teamWrap) teamWrap.classList.toggle("is-hidden", !canPickTeam);
-    els.plannerTaskTeam.innerHTML = sortedPlannerTeams().map((team) => `<option value="${escapeHtml(team.id)}">${escapeHtml(team.name)}</option>`).join("");
+    els.plannerTaskTeam.innerHTML = teamOptionItems(state.planner.teams).map(({ team, depth }) => `<option value="${escapeHtml(team.id)}">${escapeHtml(teamOptionLabel(team, depth))}</option>`).join("");
     els.plannerProjectOptions.innerHTML = state.planner.projects.map((project) => `<option value="${escapeHtml(project.name)}">${escapeHtml(project.redmineIdentifier || project.source || "")}</option>`).join("");
     renderPlannerChoiceGroup("category");
     renderPlannerChoiceGroup("priority");
     els.plannerTaskStatus.innerHTML = state.planner.statuses.map((item) => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("");
 }
 
-function defaultPlannerEditorTeamId() {
-    if (["manager", "admin"].includes(state.auth.user?.role)) {
-        return state.planner.teams.find((team) => team.id === "organization")?.id || sortedPlannerTeams()[0]?.id || "";
+function updatePlannerDueRequirement() {
+    const isNew = els.plannerTaskStatus.value === "new";
+    els.plannerTaskDue.required = !isNew;
+    if (els.plannerTaskDueLabel) {
+        els.plannerTaskDueLabel.textContent = isNew ? "Due date" : "Due date *";
     }
-    return state.auth.user?.teamId || state.planner.filters.teamId || sortedPlannerTeams()[0]?.id || "";
+}
+
+function defaultPlannerEditorTeamId(parentTask = null) {
+    if (["manager", "admin"].includes(state.auth.user?.role)) {
+        if (parentTask) {
+            const parentTeam = lookup(state.planner.teams, parentTask.teamId);
+            if (parentTeam && !isRootPlannerTeam(parentTeam.id)) {
+                return parentTeam.id;
+            }
+            const childTeam = sortedPlannerTeams().find((team) => team.parentTeamId === parentTask.teamId);
+            if (childTeam) {
+                return childTeam.id;
+            }
+            const firstNonRoot = sortedPlannerTeams().find((team) => !isRootPlannerTeam(team.id));
+            if (firstNonRoot) {
+                return firstNonRoot.id;
+            }
+        }
+        if (state.planner.filters.teamId && !isRootPlannerTeam(state.planner.filters.teamId)) {
+            return state.planner.filters.teamId;
+        }
+        return defaultPlannerTeamId();
+    }
+    return state.auth.user?.teamId || state.planner.filters.teamId || defaultPlannerTeamId();
 }
 
 function renderPlannerChoiceGroup(kind) {
@@ -3675,9 +4071,15 @@ function renderPlannerMemberPicker(selectedIds = []) {
                 <input type="checkbox" value="${user.id}" ${selected.has(Number(user.id)) ? "checked" : ""}>
                 <span class="mini-avatar ${escapeHtml(user.avatarColor || "")}">${escapeHtml(user.initials || initialsFromName(user.name))}</span>
                 <span class="member-picker-name">${escapeHtml(user.name)}</span>
-                <span class="member-team-badge">${escapeHtml((user.teamIds || [user.teamId]).filter(Boolean).join(", ").toUpperCase())}</span>
+                <span class="member-team-badge">${escapeHtml(teamNamesForPlannerUser(user))}</span>
             </label>
         `).join("") || `<div class="empty-mini">No members in this team.</div>`;
+}
+
+function teamNamesForPlannerUser(user) {
+    const teamIds = (user.teamIds || [user.teamId]).filter(Boolean);
+    const names = teamIds.map((teamId) => lookup(state.planner.teams, teamId)?.name || "").filter(Boolean);
+    return names.length ? names.join(", ") : "No team";
 }
 
 function renderPlannerSyncedPanel() {
@@ -3796,6 +4198,7 @@ function applyPlannerLinkedTicket(ticket) {
     els.plannerTaskProgress.value = ticket.progress || 0;
     els.plannerTaskStart.value = ticket.startDate || "";
     els.plannerTaskDue.value = ticket.dueDate || "";
+    updatePlannerDueRequirement();
     renderPlannerSyncedPanel();
     renderPlannerMemberPicker(ticket.assigneeIds || []);
 }
@@ -3833,7 +4236,7 @@ async function savePlannerTask(event) {
     const body = {
         teamId: els.plannerTaskTeam.value,
         projectId: els.plannerTaskProject.value ? Number(els.plannerTaskProject.value) : null,
-        parentTaskId: task?.parentTaskId || null,
+        parentTaskId: task?.parentTaskId || state.planner.editorParentTaskId || null,
         categoryId: els.plannerTaskCategory.value,
         priorityId: els.plannerTaskPriority.value,
         statusId: els.plannerTaskStatus.value,
@@ -3854,8 +4257,7 @@ async function savePlannerTask(event) {
             await apiJson(`/api/tasks/${saved.task.id}/link`, { method: "POST", body: { value: linkValue } });
         }
         closePlannerEditor();
-        invalidateOrgChildCache(body.parentTaskId);
-        await refreshPlanner();
+        await refreshPlannerAfterTaskMutation(body.parentTaskId);
     } catch (error) {
         els.plannerTaskError.textContent = error.message || "Unable to save task.";
         els.plannerTaskError.classList.remove("is-hidden");
@@ -3864,13 +4266,26 @@ async function savePlannerTask(event) {
 
 async function deletePlannerTask() {
     const task = state.planner.editorTask;
-    if (!task || !window.confirm("Delete this high-level task?")) {
+    if (!task) {
+        return;
+    }
+    const confirmed = await confirmDeletePlannerTask(task);
+    if (!confirmed) {
         return;
     }
     await apiJson(`/api/tasks/${task.id}`, { method: "DELETE" });
     closePlannerEditor();
-    invalidateOrgChildCache(task.parentTaskId);
-    await refreshPlanner();
+    await refreshPlannerAfterTaskMutation(task.parentTaskId);
+}
+
+function confirmDeletePlannerTask(task) {
+    return confirmAction({
+        tone: "danger",
+        title: "Delete task?",
+        message: `Delete "${task.title}"? This action cannot be undone.`,
+        confirmLabel: "Delete task",
+        cancelLabel: "Keep task"
+    });
 }
 
 function countStatuses(summaries) {

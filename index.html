@@ -3,8 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Team Activity Overview</title>
-    <link rel="icon" href="data:,">
+    <title>Birdseye</title>
+    <link rel="icon" href="assets/entgra-mark.jpeg">
+    <link rel="apple-touch-icon" href="assets/entgra-mark.jpeg">
     <link rel="stylesheet" href="styles.css?v=planner-1">
     <script src="config.example.js?v=planner-1"></script>
     <script type="module" src="app.js?v=planner-1"></script>
@@ -13,14 +14,12 @@
     <section class="login-shell is-hidden" id="loginShell" aria-labelledby="loginTitle">
         <form class="login-card" id="loginForm">
             <div class="login-brand">
-                <div class="login-logo">TA</div>
-                <div>
-                    <h1>Team Activity</h1>
-                    <p>WORK OVERVIEW · HIGH-LEVEL PLANNER</p>
-                </div>
+                <img class="login-wordmark" src="assets/entgra-logo.png" alt="Entgra">
+                <h1>Team Activity</h1>
+                <p>WORK OVERVIEW · HIGH-LEVEL PLANNER</p>
             </div>
             <h2 id="loginTitle">Sign in</h2>
-            <p class="login-copy">Use your Redmine username and password. The backend stores your Redmine API key in the server-side session and uses it for Redmine calls.</p>
+            <p class="login-copy">Use your Redmine/LDAP username and password.</p>
             <label class="field">
                 <span>Username</span>
                 <input id="loginUsername" name="username" autocomplete="username" required>
@@ -29,16 +28,20 @@
                 <span>Password</span>
                 <input id="loginPassword" name="password" type="password" autocomplete="current-password" required>
             </label>
-            <button class="refresh-button login-submit" type="submit">Sign in</button>
+            <button class="refresh-button login-submit" id="loginSubmitButton" type="submit">Sign in</button>
+            <div class="login-status is-hidden" id="loginStatus" aria-live="polite"></div>
             <div class="period-error is-hidden" id="loginError" aria-live="polite"></div>
         </form>
     </section>
 
-    <main class="app-shell">
+    <main class="app-shell is-hidden">
         <header class="topbar">
-            <div>
-                <p class="eyebrow" id="workingDayLabel">Last week</p>
-                <h1>Team Activity Overview</h1>
+            <div class="topbar-brand">
+                <img class="topbar-logo" src="assets/entgra-mark.jpeg" alt="Entgra">
+                <div>
+                    <p class="eyebrow" id="workingDayLabel">Last week</p>
+                    <h1>Team Activity Overview</h1>
+                </div>
             </div>
             <div class="topbar-actions">
                 <label class="field compact-field">
@@ -46,20 +49,41 @@
                     <select id="viewSelect">
                         <option value="planner">High-Level Planner</option>
                         <option value="work-overview">Redmine Overview</option>
-                        <option value="time-logs">Time Logs</option>
                     </select>
                 </label>
-                <button class="refresh-button is-hidden" id="addPlannerTaskButton" type="button">Add task</button>
+                <button class="refresh-button is-hidden add-task-button" id="addPlannerTaskButton" type="button">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+                    Add task
+                </button>
                 <div class="user-chip-wrapper is-hidden" id="plannerUserChip"></div>
             </div>
         </header>
 
+        <section class="app-loading is-hidden" id="appLoading" aria-live="polite">
+            <div class="app-loading-card">
+                <div class="app-loading-head">
+                    <span class="spinner" aria-hidden="true"></span>
+                    <div>
+                        <strong id="appLoadingTitle">Loading workspace</strong>
+                        <span id="appLoadingMessage">Preparing your view.</span>
+                    </div>
+                </div>
+                <div class="app-loading-track" aria-hidden="true">
+                    <i id="appLoadingProgress" style="width: 8%"></i>
+                </div>
+            </div>
+        </section>
+
         <div class="notice-bar" id="noticeBar">
-            <section class="notice is-hidden" id="globalNotice" aria-live="polite"></section>
-            <button class="icon-refresh-button" id="refreshButton" type="button" title="Refresh" aria-label="Refresh">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-            </button>
+            <section class="notice is-hidden" id="globalNotice" aria-live="polite">
+                <span class="notice-message" id="globalNoticeMessage"></span>
+                <button class="icon-refresh-button" id="refreshButton" type="button" title="Refresh" aria-label="Refresh">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                </button>
+            </section>
         </div>
+
+        <section class="directory-warning-panel is-hidden" id="directoryWarningPanel" aria-live="polite"></section>
 
         <section class="period-panel" id="periodPanel" aria-label="Reporting period">
             <label class="field">
@@ -117,9 +141,12 @@
                 <span>Member</span>
                 <select id="plannerMemberFilter"></select>
             </label>
-            <button class="secondary-button planner-filter-button" id="plannerFilterButton" type="button" aria-expanded="false">
-                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
-                Filters
+            <div class="planner-toggle-row" id="plannerToggleRow" role="group" aria-label="Group tasks">
+                <button class="planner-segment is-selected" id="plannerGroupPriority" type="button">By priority</button>
+                <button class="planner-segment" id="plannerGroupCategory" type="button">By category</button>
+            </div>
+            <button class="secondary-button planner-filter-button" id="plannerFilterButton" type="button" aria-expanded="false" title="Add filters" aria-label="Add filters">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="filter-plus-stem" d="M12 5v14"/><path d="M5 12h14"/></svg>
             </button>
             <label class="field planner-advanced-filter">
                 <span>Category</span>
@@ -133,10 +160,6 @@
                 <span>Search</span>
                 <input id="plannerSearch" type="search" placeholder="Search title or description">
             </label>
-            <div class="planner-toggle-row" id="plannerToggleRow">
-                <button class="secondary-button is-selected" id="plannerGroupPriority" type="button">By priority</button>
-                <button class="secondary-button" id="plannerGroupCategory" type="button">By category</button>
-            </div>
         </section>
 
         <section class="summary-strip" id="timeSummaryStrip" aria-label="Activity status summary">
@@ -200,7 +223,7 @@
             </div>
             <button class="summary-tile planner-none-tile" id="plannerNonePriorityTile" type="button">
                 <span class="summary-value" id="plannerNoneCount">0</span>
-                <span class="summary-label">None priority</span>
+                <span class="summary-label">No priority</span>
             </button>
         </section>
 
@@ -257,7 +280,7 @@
                     </label>
                     <div class="planner-extra-toggle-row full">
                         <button class="secondary-button planner-extra-button" id="plannerExtraFieldsButton" type="button" aria-expanded="false">
-                            Extra fields
+                            Optional data
                         </button>
                     </div>
                     <label class="field planner-extra-field">
@@ -284,7 +307,7 @@
                         <input id="plannerTaskStart" type="date">
                     </label>
                     <label class="field synced-hideable" id="dueFieldWrap">
-                        <span>Due date *</span>
+                        <span id="plannerTaskDueLabel">Due date *</span>
                         <input id="plannerTaskDue" type="date" required>
                     </label>
                     <div class="planner-synced-panel is-hidden full" id="plannerSyncedPanel"></div>
@@ -324,16 +347,33 @@
             <div class="settings-view-inner">
                 <div class="settings-view-header">
                     <div>
-                        <h1 id="settingsTitle">Manage existing teams</h1>
+                        <h1 id="settingsTitle">Team Details</h1>
                     </div>
                     <div class="settings-header-actions">
                         <span class="sync-badge" id="syncBadge">Synced with directory · 0 users</span>
-                        <button class="btn-primary" id="newTeamButton" type="button">+ New team</button>
+                        <button class="btn-primary" id="newTeamButton" type="button">Refresh directory</button>
                         <button class="secondary-button" id="closeSettingsButton" type="button">← Back</button>
                     </div>
                 </div>
                 <div class="team-mgmt-shell" id="teamMgmtShell">
                     <!-- rendered by JS -->
+                </div>
+            </div>
+        </section>
+
+        <section class="confirm-modal-backdrop is-hidden" id="confirmModal" aria-labelledby="confirmModalTitle" aria-modal="true" role="dialog">
+            <div class="confirm-modal">
+                <div class="confirm-icon" id="confirmModalIcon" aria-hidden="true">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/></svg>
+                </div>
+                <div class="confirm-copy">
+                    <p class="eyebrow" id="confirmModalEyebrow">Confirm action</p>
+                    <h2 id="confirmModalTitle">Are you sure?</h2>
+                    <p id="confirmModalMessage"></p>
+                </div>
+                <div class="confirm-actions">
+                    <button class="secondary-button" id="confirmCancelButton" type="button">Cancel</button>
+                    <button class="refresh-button confirm-primary-button" id="confirmAcceptButton" type="button">Confirm</button>
                 </div>
             </div>
         </section>

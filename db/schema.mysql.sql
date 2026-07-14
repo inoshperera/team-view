@@ -4,6 +4,7 @@ SET FOREIGN_KEY_CHECKS = 1;
 CREATE TABLE IF NOT EXISTS users (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   redmine_user_id INT NULL,
+  external_member_id VARCHAR(64) NULL,
   first_name VARCHAR(100) NOT NULL,
   last_name VARCHAR(100) NOT NULL,
   display_name VARCHAR(201) GENERATED ALWAYS AS (CONCAT(first_name, ' ', last_name)) STORED,
@@ -14,10 +15,12 @@ CREATE TABLE IF NOT EXISTS users (
   role ENUM('member','lead','manager','admin') NOT NULL DEFAULT 'member',
   is_active TINYINT(1) NOT NULL DEFAULT 1,
   last_login_at DATETIME NULL,
+  directory_synced_at DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uq_users_redmine (redmine_user_id),
+  UNIQUE KEY uq_users_external_member (external_member_id),
   UNIQUE KEY uq_users_email (email),
   UNIQUE KEY uq_users_username (username),
   KEY idx_users_role (role)
@@ -48,6 +51,7 @@ CREATE TABLE IF NOT EXISTS teams (
   lead_user_id BIGINT UNSIGNED NULL,
   color VARCHAR(16) NULL,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
+  directory_synced_at DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
@@ -60,6 +64,7 @@ CREATE TABLE IF NOT EXISTS teams (
 CREATE TABLE IF NOT EXISTS team_members (
   team_id VARCHAR(32) NOT NULL,
   user_id BIGINT UNSIGNED NOT NULL,
+  role ENUM('member','lead') NOT NULL DEFAULT 'member',
   joined_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (team_id, user_id),
   KEY idx_team_members_user (user_id),
@@ -153,7 +158,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   parent_task_id BIGINT UNSIGNED NULL,
   category_id VARCHAR(16) NOT NULL,
   priority_id VARCHAR(16) NOT NULL DEFAULT 'medium',
-  status_id VARCHAR(16) NOT NULL DEFAULT 'working',
+  status_id VARCHAR(16) NOT NULL DEFAULT 'new',
   title VARCHAR(255) NOT NULL,
   description TEXT NULL,
   progress INT NOT NULL DEFAULT 0,
@@ -227,22 +232,18 @@ INSERT INTO priorities (id, label, sort_order, color_class) VALUES
 ON DUPLICATE KEY UPDATE label = VALUES(label), sort_order = VALUES(sort_order), color_class = VALUES(color_class);
 
 INSERT INTO statuses (id, label, is_terminal, sort_order, color_class) VALUES
+  ('new', 'New', 0, 5, 'pill-new'),
   ('working', 'In progress', 0, 10, 'pill-working'),
   ('blocked', 'Blocked', 0, 20, 'pill-blocked'),
   ('onhold', 'On hold', 0, 30, 'pill-onhold'),
   ('done', 'Done', 1, 40, 'pill-done')
 ON DUPLICATE KEY UPDATE label = VALUES(label), is_terminal = VALUES(is_terminal), sort_order = VALUES(sort_order), color_class = VALUES(color_class);
 
-INSERT INTO teams (id, name) VALUES
-  ('organization', 'Organization'),
-  ('uem', 'UEM')
-ON DUPLICATE KEY UPDATE name = VALUES(name), is_active = 1;
-
 INSERT INTO projects (name, source, redmine_identifier, owner_team_id) VALUES
-  ('product-uem 5.2.0 GA', 'redmine', 'product-uem', 'uem'),
-  ('Product IOTS', 'redmine', 'product-iots', 'uem'),
+  ('product-uem 5.2.0 GA', 'redmine', 'product-uem', NULL),
+  ('Product IOTS', 'redmine', 'product-iots', NULL),
   ('Backlog', 'redmine', 'backlog', NULL),
   ('Internal · HR', 'internal', 'internal-hr', NULL),
   ('Internal · Operations', 'internal', 'internal-ops', NULL),
-  ('Customer · ACME Roll-out', 'internal', 'customer-acme', 'uem')
+  ('Customer · ACME Roll-out', 'internal', 'customer-acme', NULL)
 ON DUPLICATE KEY UPDATE name = VALUES(name), source = VALUES(source), owner_team_id = VALUES(owner_team_id), is_active = 1;

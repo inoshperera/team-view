@@ -2,7 +2,8 @@
 
 Local Redmine activity board and high-level team planner. The browser app is
 still static HTML/CSS/JS, but the Python backend now owns login, per-user
-Redmine sessions, DB-backed teams, and high-level planning tasks.
+Redmine sessions, organization-directory team cache, and high-level planning
+tasks.
 
 ## Files
 
@@ -16,6 +17,7 @@ redmine_proxy.py    Team View backend and Redmine passthrough
 proxy.py            Compatibility wrapper for redmine_proxy.py
 backend/            DB, Redmine, and service modules
 db/schema.mysql.sql MySQL schema and seed data
+imports/high-level-task-import/ Excel workbook and bulk task importer
 requirements.txt    Backend dependency list
 ```
 
@@ -33,9 +35,9 @@ and sends the browser an HTTP-only `session_id` cookie. Existing Redmine calls
 for Time Logs and Work Overview are still proxied, but they now use the current
 user's session API key instead of a hardcoded key.
 
-The DB stores users, teams, team membership, projects, high-level tasks, linked
-Redmine ticket cache rows, and sessions. The old `/team-config.json` route is
-kept as a DB-backed compatibility route for the existing Work Overview settings.
+The DB stores users, read-only synced teams/team membership, projects,
+high-level tasks, linked Redmine ticket cache rows, and sessions. Teams and
+members are refreshed from Redmine's organization team payload API at login.
 
 ## Configure Backend
 
@@ -62,9 +64,17 @@ export TEAM_VIEW_DB_PORT="3306"
 export TEAM_VIEW_DB_USER="root"
 export TEAM_VIEW_DB_PASSWORD="root"
 export TEAM_VIEW_DB_NAME="team_view"
+export TEAM_DIRECTORY_PAYLOAD_PATH="/admin/ta_teams/payload.json"
+export TEAM_DIRECTORY_API_KEY="" # optional service key; otherwise the signed-in user's Redmine API key is used
+export TEAM_DIRECTORY_MANAGERS_FILE="data/app-managers.json"
+export TEAM_VIEW_LOG_LEVEL="INFO" # use DEBUG temporarily while diagnosing issues
 ```
 
 Do not put Redmine passwords or API keys in browser-readable source files.
+
+App managers are not inferred from Redmine admin. Put manager emails, usernames,
+or directory member IDs in `data/app-managers.json`. Team leads are inferred from
+the directory payload's `leadMemberIds`.
 
 If port `9000` or `8000` is already in use:
 
@@ -74,7 +84,7 @@ APP_PORT=8010 PROXY_PORT=9100 scripts/servers.sh start
 
 Then set `proxyUrl: "http://localhost:9100"` in `config.local.js` if needed.
 
-## Configure Team Members
+## Configure Browser Defaults
 
 Create a local config from the example:
 
@@ -123,6 +133,14 @@ scripts/servers.sh stop
 scripts/servers.sh restart
 ```
 
+Backend logs are written to stdout/stderr. With `scripts/servers.sh`, they are
+captured in `.server/proxy.log`; with `systemd`, send them to journald or your
+central log collector. Each backend request emits `request_start` and
+`request_end` records with a request id, path, status, client IP, and duration.
+State-changing actions also emit `team_view.audit` records for login/logout,
+task creates/updates/deletes, Redmine linking, and sync operations. Redmine
+upstream requests are logged without passwords, session ids, or API keys.
+
 ## Use The Dashboard
 
 Sign in with a Redmine account, then use the View dropdown to switch between
@@ -133,6 +151,49 @@ high-level tasks. Team leads see their team scope. Tasks can be linked to a
 Redmine ticket by selecting a recent ticket, typing an issue number, or pasting
 a Redmine issue URL. When a task is linked, status, priority, progress, dates,
 and assignees are synced from that ticket and its sub-tickets.
+
+## Bulk Import High-Level Tasks
+
+The Excel import workflow lives in:
+
+```text
+imports/high-level-task-import/
+├── README.md
+├── high-level-task-import.xlsx
+└── import_tasks.py
+```
+
+The script reads the local `.xlsx` file in that folder. If the team updates the
+Google Sheets version, download/export it back over
+`imports/high-level-task-import/high-level-task-import.xlsx` before importing.
+
+Validate rows against an environment without creating tasks:
+
+```bash
+python3 imports/high-level-task-import/import_tasks.py --env local --username YOUR_USERNAME --check
+python3 imports/high-level-task-import/import_tasks.py --env production --username YOUR_USERNAME --check
+```
+
+Import rows:
+
+```bash
+python3 imports/high-level-task-import/import_tasks.py --env local --username YOUR_USERNAME
+python3 imports/high-level-task-import/import_tasks.py --env production --username YOUR_USERNAME
+```
+
+Notes:
+
+- The default behavior creates tasks immediately; there is no dry-run/apply
+  split.
+- `--env prod` is accepted as a short production alias.
+- `Task ID` is workbook-local. `Depends On Task ID` is converted to
+  `parentTaskId`.
+- Duplicate protection skips existing tasks with the same title, team, and start
+  date unless `--allow-duplicates` is supplied.
+- If `Redmine Ticket` is filled, the task is linked after creation. Redmine
+  linking can overwrite status, priority, progress, dates, and assignees.
+- Team and member values must exist in the target environment's `/api/bootstrap`
+  response. Local and production directories may differ.
 
 In Time Logs, use the period selector to switch between:
 
@@ -156,8 +217,9 @@ excludes New and Closed tickets from active work, and shows total working
 tickets, active people, and each selected person's working ticket list with
 tracker, status, priority, start date, and due date.
 
-Use Settings in Work Overview to create teams and assign users. `Save teams`
-writes through the DB-backed `/team-config.json` compatibility route.
+The Settings view is now a read-only team directory. It shows the teams,
+members, and leads synced from the organization payload. Managers can trigger a
+manual directory refresh; team edits should be made in the organization system.
 
 ## Verification
 

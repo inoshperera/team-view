@@ -1,5 +1,9 @@
 import os
 from dataclasses import dataclass
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True)
@@ -14,6 +18,10 @@ class AppConfig:
     db_name: str
     session_hours: int
     dev_cookie: bool
+    directory_payload_path: str
+    directory_api_key: str
+    directory_manager_config: str
+    log_level: str
 
 
 def load_config() -> AppConfig:
@@ -28,4 +36,8 @@ def load_config() -> AppConfig:
         db_name=os.environ.get("TEAM_VIEW_DB_NAME", "team_view").strip() or "team_view",
         session_hours=int(os.environ.get("TEAM_VIEW_SESSION_HOURS", "8")),
         dev_cookie=os.environ.get("TEAM_VIEW_DEV_COOKIE", "true").lower() != "false",
+        directory_payload_path=os.environ.get("TEAM_DIRECTORY_PAYLOAD_PATH", "/admin/ta_teams/payload.json").strip() or "/admin/ta_teams/payload.json",
+        directory_api_key=os.environ.get("TEAM_DIRECTORY_API_KEY", "").strip(),
+        directory_manager_config=os.environ.get("TEAM_DIRECTORY_MANAGERS_FILE", str(ROOT / "data" / "app-managers.json")).strip(),
+        log_level=os.environ.get("TEAM_VIEW_LOG_LEVEL", "INFO").strip().upper() or "INFO",
     )
