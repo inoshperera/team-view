@@ -12,6 +12,7 @@ window.TEAM_ACTIVITY_CONFIG = {
         { id: 20, name: "Navod" }
     ],
     teams: [
-        { id: "core-team", name: "Core Team", memberIds: [14, 142, 141, 11, 20] }
+        { id: "organization", name: "Organization", parentTeamId: "", memberIds: [] },
+        { id: "core-team", name: "Core Team", parentTeamId: "organization", memberIds: [14, 142, 141, 11, 20] }
     ]
 };

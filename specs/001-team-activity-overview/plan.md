@@ -92,6 +92,11 @@ specs/001-team-activity-overview/
 ├── proxy.py
 ├── requirements.txt
 ├── README.md
+├── imports/
+│   └── high-level-task-import/
+│       ├── README.md
+│       ├── high-level-task-import.xlsx
+│       └── import_tasks.py
 ├── referance/
 └── specs/
 ```
@@ -274,3 +279,45 @@ conflict:
   access without exposing credentials.
 - Issue list pagination must be handled the same way time-entry pagination is
   handled.
+
+## Append-Only Operations Addendum: High-Level Task Excel Import
+
+The bulk high-level task import lives in `imports/high-level-task-import/`.
+Agents should read `imports/high-level-task-import/README.md` before modifying
+or running it.
+
+### Workbook
+
+- Source workbook: `imports/high-level-task-import/high-level-task-import.xlsx`.
+- Required `Tasks` columns include `Task ID`, `Depends On Task ID`, `Team`,
+  `Title`, `Category`, `Priority`, `Status`, `Start Date`, and
+  `Assigned Member`.
+- `Task ID` is a workbook-local identifier used for dependency references.
+- `Depends On Task ID` maps to the app's `parentTaskId`. If it refers to another
+  workbook row, the importer creates the parent first and uses the newly created
+  system task id.
+- Selection/dropdown source values in Google Sheets must match the app's
+  `/api/bootstrap` values for the target environment. Do not assume local and
+  production team/user directories are identical.
+- If the user edits the Google Sheet version, export or download it back to
+  `imports/high-level-task-import/high-level-task-import.xlsx` before running
+  the local script. The script reads the local `.xlsx`, not Google Sheets live.
+
+### Import Script
+
+- Script: `imports/high-level-task-import/import_tasks.py`.
+- The script is dependency-free and parses `.xlsx` via Python standard library
+  ZIP/XML APIs.
+- Default command creates tasks immediately; there is no dry-run/apply split.
+- Environment selector:
+  - Local: `python3 imports/high-level-task-import/import_tasks.py --env local --username USER`
+  - Production: `python3 imports/high-level-task-import/import_tasks.py --env production --username USER`
+  - `--env prod` is a production alias.
+- Validation-only mode:
+  `python3 imports/high-level-task-import/import_tasks.py --env production --username USER --check`
+- `--base-url` remains available for unusual endpoint overrides.
+- Duplicate protection skips matching title/team/start-date rows unless
+  `--allow-duplicates` is provided.
+- `Redmine Ticket` is optional. When provided, the importer creates the task and
+  then links it to Redmine. Linking can overwrite synced fields such as status,
+  priority, progress, dates, and members with Redmine ticket values.

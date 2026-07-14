@@ -4,8 +4,8 @@
 
 - Python 3.10 or newer
 - A modern desktop browser
-- Redmine API access for the team data
-- Local Redmine API key stored outside browser-readable files
+- Redmine username/password access for each signed-in user
+- MySQL with a local `team_view` database
 
 ## Planned Local Files
 
@@ -15,43 +15,56 @@ styles.css          # Modern static UI styling
 app.js              # Fetch, normalize, summarize, and render activity data
 config.example.js   # Safe sample selected-team/proxy config
 config.local.js     # Local selected-team/proxy config, ignored by git
-proxy.py            # Local Redmine API proxy
-requirements.txt    # Proxy dependency list if requests is used
+redmine_proxy.py    # Team View backend and Redmine passthrough
+proxy.py            # Compatibility wrapper
+backend/            # DB, Redmine, and service modules
+db/schema.mysql.sql # MySQL schema and seed data
+requirements.txt    # Backend dependency list
 ```
 
-## Configure Proxy Credentials
+## Configure Database And Backend
 
-Set local environment variables before starting the proxy:
+Create and initialize the database:
+
+```bash
+mysql -u root -proot -e "CREATE DATABASE IF NOT EXISTS team_view"
+mysql -u root -proot team_view -e "source db/schema.mysql.sql"
+```
+
+Install dependencies:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+Optional backend environment variables:
 
 ```bash
 export REDMINE_URL="https://your-redmine.example.com"
-export REDMINE_API_KEY="your-local-api-key"
+export TEAM_VIEW_DB_HOST="localhost"
+export TEAM_VIEW_DB_PORT="3306"
+export TEAM_VIEW_DB_USER="root"
+export TEAM_VIEW_DB_PASSWORD="root"
+export TEAM_VIEW_DB_NAME="team_view"
 ```
 
-Do not put the API key in `index.html`, `app.js`, or browser-loaded config.
+Do not put Redmine passwords or API keys in `index.html`, `app.js`, or
+browser-loaded config.
 
-## Configure Selected Team
+## Configure Browser Defaults
 
-Copy the example config when implementation creates it:
+Copy the example config if local browser defaults need changing:
 
 ```bash
 cp config.example.js config.local.js
 ```
 
-Edit `config.local.js` with selected Redmine user IDs and display names.
+Team membership and planner tasks are stored in MySQL, not in the browser config.
 
-## Run The Proxy
+## Run The App
 
-The MVP proxy uses Python standard-library HTTP modules, so no third-party
-packages are required. `requirements.txt` is kept as a dependency note.
-
-Install proxy dependencies only if future changes add any:
-
-```bash
-python3 -m pip install -r requirements.txt
-```
-
-Start both the proxy and static dashboard:
+Start both the backend and static dashboard:
 
 ```bash
 scripts/servers.sh start
@@ -96,27 +109,33 @@ scripts/servers.sh stop
 
 ## MVP Verification
 
-1. Start the proxy with valid Redmine credentials.
+1. Start the backend and static app.
 2. Open the dashboard.
-3. Confirm every configured team member appears.
-4. Confirm Last Week, Last Month, This Month, and Custom Range update the member
+3. Sign in with a Redmine account.
+4. Confirm High-Level Planner loads teams, projects, users, and tasks from the DB.
+5. Create or edit a high-level task.
+6. Link a task by selecting a recent Redmine ticket, typing an issue number, or
+   pasting a Redmine issue URL.
+7. Confirm linked tasks show synced status, progress, dates, and assignees.
+8. Confirm `POST /api/sync/redmine` syncs only linked high-level tasks.
+9. Switch to Time Logs and confirm Last Week, Last Month, This Month, and Custom Range update the member
    cards for the selected period.
-5. Confirm each card shows total spent time, remaining estimate state, and up to
+10. Confirm each card shows total spent time, remaining estimate state, and up to
    five grouped activity rows.
-6. Confirm members without entries show an inactive/no-activity-for-period state.
-7. Click a member card and confirm the detail view shows the selected period,
+11. Confirm members without entries show an inactive/no-activity-for-period state.
+12. Click a member card and confirm the detail view shows the selected period,
    full activity list, totals, and estimate details.
-8. Click refresh and confirm the last-updated time changes only after success.
-9. Stop the proxy and refresh again; confirm a visible error state appears and
+13. Click refresh and confirm the last-updated time changes only after success.
+14. Stop the backend and refresh again; confirm a visible error state appears and
    previous data is not presented as freshly updated.
-10. Search browser-readable files for the API key and confirm it is absent.
+15. Search browser-readable files for Redmine passwords/API keys and confirm they are absent.
 
 ## Work Overview Verification
 
 1. Use the View selector to switch from Time Logs to Work Overview.
 2. Confirm Work Overview is the default view on load.
-3. Confirm Settings opens the team configuration view and saves team JSON through
-   the local proxy to `team-config.local.json`.
+3. Confirm Settings opens the team configuration view and saves teams through
+   the DB-backed `/team-config.json` compatibility route.
 4. Confirm Team and Users selection modes render the selected users. Full Team
    is intentionally not shown.
 4. Confirm Work Overview loads `/issues.json?assigned_to_id=...&status_id=*`

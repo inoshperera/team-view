@@ -2,21 +2,40 @@
 
 ## Purpose
 
-The browser app talks only to the local proxy. The proxy attaches Redmine
-credentials and forwards allowed read-only Redmine API requests.
+The browser app talks only to the local Team View backend. The backend
+authenticates each user against Redmine, stores the returned Redmine API key in
+a server-side session, and forwards allowed Redmine API requests with that
+user's credentials.
 
 ## Configuration
 
-Required local values:
+Local values:
 
 | Name | Owner | Browser-visible | Purpose |
 |------|-------|-----------------|---------|
 | `REDMINE_URL` | proxy | no | Base Redmine URL, for example the company Redmine host |
-| `REDMINE_API_KEY` | proxy | no | Redmine API key used by the proxy |
 | `PROXY_HOST` | proxy | no | Defaults to `localhost` |
 | `PROXY_PORT` | proxy | yes as URL only | Defaults to `9000` |
+| `TEAM_VIEW_DB_*` | backend | no | MySQL connection settings for teams, users, tasks, and sessions |
 
-The browser MAY know the proxy URL, but MUST NOT know the Redmine API key.
+The browser MAY know the proxy URL, but MUST NOT know Redmine passwords or API
+keys.
+
+## Auth Requests
+
+### POST `/api/auth/login`
+
+Authenticates with Redmine Basic Auth using the submitted username/password.
+On success, the backend stores the returned Redmine API key in
+`user_sessions.redmine_api_key` and returns an HTTP-only `session_id` cookie.
+
+### POST `/api/auth/logout`
+
+Deletes the server-side session and clears the cookie.
+
+### GET `/api/auth/me`
+
+Returns the signed-in user payload when the session is valid.
 
 ## Allowed Requests
 
@@ -104,11 +123,11 @@ Expected successful response shape:
 ## Proxy Behavior
 
 - MUST support `GET` and `OPTIONS` for local browser access.
-- MAY support local-only `POST /team-config.json` so the static browser app can
-  persist team settings to `team-config.local.json`.
+- MUST support local-only `GET` and `POST /team-config.json` as a DB-backed
+  compatibility route for existing Work Overview team settings.
 - MUST support `GET /proxy-config.json` so browser-rendered issue links can use
   the Redmine base URL without exposing the API key.
-- MUST add `X-Redmine-API-Key` server-side.
+- MUST add the current session's `X-Redmine-API-Key` server-side.
 - MUST return JSON responses from Redmine without exposing credentials.
 - MUST restrict forwarding to expected Redmine API paths for MVP.
 - MUST return useful non-secret error responses for network, auth, and invalid

@@ -42,18 +42,19 @@ UI must visibly distinguish estimates from facts.
 - Hiding occupied duration entirely: rejected because the MVP specifically needs
   an initial indication of how long someone may be occupied.
 
-## Decision: Keep Credentials In Proxy Environment
+## Decision: Keep Redmine Credentials Server-Side Per Session
 
-**Rationale**: The reference proxy demonstrates the right boundary but embeds an
-API key in source. The MVP keeps the same proxy concept while moving sensitive
-values to environment variables such as `REDMINE_URL` and `REDMINE_API_KEY`.
-Browser code calls only the local proxy.
+**Rationale**: The browser signs in with Redmine username/password through the
+local backend. The backend validates those credentials with Redmine Basic Auth,
+stores only the returned Redmine API key in a server-side session, and forwards
+allowed Redmine requests with that session key. Browser code calls only the
+local backend and never sees Redmine passwords or API keys.
 
 **Alternatives considered**:
 - Put API key in browser config: rejected by constitution and security
   requirements.
-- OAuth/session login in the browser: unnecessary for the local MVP and more
-  complex than the existing Redmine API-key workflow.
+- A shared proxy API key: rejected because multiple users need Redmine calls to
+  run with their own credentials.
 
 ## Decision: Use A Flat Static App Structure
 
