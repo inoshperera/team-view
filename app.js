@@ -4370,11 +4370,11 @@ function fillPlannerEditorOptions(task) {
 }
 
 function updatePlannerDueRequirement() {
-    const isNew = els.plannerTaskStatus.value === "new";
+    const statusAllowsNoDueDate = ["new", "onhold"].includes(els.plannerTaskStatus.value);
     const isSynced = Boolean(state.planner.linkedTicket);
-    els.plannerTaskDue.required = !isNew && !isSynced;
+    els.plannerTaskDue.required = !statusAllowsNoDueDate && !isSynced;
     if (els.plannerTaskDueLabel) {
-        els.plannerTaskDueLabel.textContent = isNew ? "Due date" : "Due date *";
+        els.plannerTaskDueLabel.textContent = statusAllowsNoDueDate ? "Due date" : "Due date *";
     }
 }
 
