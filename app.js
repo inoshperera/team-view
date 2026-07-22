@@ -578,7 +578,7 @@ function bindEvents() {
     els.plannerExtraFieldsButton.addEventListener("click", togglePlannerExtraFields);
     els.plannerTaskProjectSearch.addEventListener("input", handlePlannerProjectSearch);
     els.plannerTaskProjectSearch.addEventListener("change", handlePlannerProjectSearch);
-    els.plannerTaskRedmineSearch.addEventListener("input", debounce(loadPlannerTicketOptions, 250));
+    els.plannerTaskRedmineSearch.addEventListener("input", handlePlannerRedmineSearchInput);
     els.plannerTaskProgress.addEventListener("input", clampPlannerProgressInput);
     document.querySelectorAll("[data-status-filter]").forEach((button) => {
         button.addEventListener("click", () => {
@@ -4371,7 +4371,8 @@ function fillPlannerEditorOptions(task) {
 
 function updatePlannerDueRequirement() {
     const isNew = els.plannerTaskStatus.value === "new";
-    els.plannerTaskDue.required = !isNew;
+    const isSynced = Boolean(state.planner.linkedTicket);
+    els.plannerTaskDue.required = !isNew && !isSynced;
     if (els.plannerTaskDueLabel) {
         els.plannerTaskDueLabel.textContent = isNew ? "Due date" : "Due date *";
     }
@@ -4476,6 +4477,14 @@ function renderPlannerMemberPicker(selectedIds = []) {
         `).join("") || `<div class="empty-mini">No members in this team.</div>`;
 }
 
+function selectedPlannerMemberIds() {
+    const syncedIds = state.planner.linkedTicket?.memberIds || state.planner.linkedTicket?.assigneeIds;
+    if (state.planner.linkedTicket) {
+        return (syncedIds || []).map(Number).filter(Number.isFinite);
+    }
+    return [...els.plannerTaskMembers.querySelectorAll("input[type='checkbox']:checked")].map((input) => Number(input.value));
+}
+
 function teamNamesForPlannerUser(user) {
     const teamIds = (user.teamIds || [user.teamId]).filter(Boolean);
     const names = teamIds.map((teamId) => lookup(state.planner.teams, teamId)?.name || "").filter(Boolean);
@@ -4488,12 +4497,17 @@ function renderPlannerSyncedPanel() {
 
     els.plannerSyncedPanel.classList.toggle("is-hidden", !synced);
     document.querySelectorAll(".synced-hideable").forEach((el) => el.classList.toggle("is-hidden", synced));
+    document.querySelectorAll(".synced-hideable input, .synced-hideable select, .synced-hideable textarea, .synced-hideable button").forEach((control) => {
+        control.disabled = synced;
+    });
+    updatePlannerDueRequirement();
     const membersBadge = document.getElementById("membersSyncedBadge");
     if (membersBadge) membersBadge.classList.toggle("is-hidden", !synced);
 
     if (!synced) return;
 
     const statusLabel = (state.planner.statuses.find((s) => s.id === (ticket.statusId || "working"))?.label) || ticket.statusId || "—";
+    const priorityLabel = (state.planner.priorities.find((p) => p.id === (ticket.priorityId || "medium"))?.label) || ticket.priorityId || "—";
     const startVal = ticket.startDate || "Not set";
     const dueVal = ticket.dueDate || "Not set";
     const progressVal = ticket.progress ?? els.plannerTaskProgress.value ?? 0;
@@ -4504,7 +4518,7 @@ function renderPlannerSyncedPanel() {
         <div class="synced-panel-head">
             <div>
                 <strong class="synced-panel-title">SYNCED FIELDS</strong>
-                <p class="synced-panel-desc">Status, progress, dates and assignees are kept in sync with <strong>${escapeHtml(ticket.issueKey || String(ticket.redmineIssueId))}</strong> and its sub-tickets by the backend. Update them in Redmine to change them here.</p>
+                <p class="synced-panel-desc">Priority, status, progress, dates and assignees are kept in sync with <strong>${escapeHtml(ticket.issueKey || String(ticket.redmineIssueId))}</strong> and its sub-tickets by the backend. Update them in Redmine to change them here.</p>
             </div>
             <button type="button" class="synced-unlink-btn" id="unlinkPlannerTicketButton">
                 <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -4515,6 +4529,10 @@ function renderPlannerSyncedPanel() {
             <div class="synced-field-box">
                 <div class="synced-field-label"><span>Status</span><span class="synced-badge">${syncedIcon}</span></div>
                 <div class="synced-field-value">${escapeHtml(statusLabel)}</div>
+            </div>
+            <div class="synced-field-box">
+                <div class="synced-field-label"><span>Priority</span><span class="synced-badge">${syncedIcon}</span></div>
+                <div class="synced-field-value">${escapeHtml(priorityLabel)}</div>
             </div>
             <div class="synced-field-box">
                 <div class="synced-field-label"><span>Progress</span><span class="synced-badge">${syncedIcon}</span></div>
@@ -4533,18 +4551,11 @@ function renderPlannerSyncedPanel() {
             </div>
         </div>
     `;
-    els.plannerSyncedPanel.querySelector("#unlinkPlannerTicketButton").addEventListener("click", () => {
-        state.planner.linkedTicket = null;
-        els.plannerTaskRedmineSearch.value = "";
-        renderPlannerSyncedPanel();
-        renderPlannerMemberPicker(state.planner.editorTask?.memberIds || []);
-    });
+    els.plannerSyncedPanel.querySelector("#unlinkPlannerTicketButton").addEventListener("click", () => clearPlannerLinkedTicket());
 }
 
 async function handlePlannerProjectChange() {
-    state.planner.linkedTicket = null;
-    els.plannerTaskRedmineSearch.value = "";
-    renderPlannerSyncedPanel();
+    clearPlannerLinkedTicket();
     await loadPlannerTicketOptions();
 }
 
@@ -4554,6 +4565,27 @@ async function handlePlannerProjectSearch() {
     if (project) {
         await handlePlannerProjectChange();
     }
+}
+
+function handlePlannerRedmineSearchInput() {
+    window.clearTimeout(handlePlannerRedmineSearchInput.timer);
+    if (!els.plannerTaskRedmineSearch.value.trim()) {
+        els.plannerTicketOptions.innerHTML = "";
+        if (state.planner.linkedTicket) {
+            clearPlannerLinkedTicket({ clearInput: false });
+        }
+        return;
+    }
+    handlePlannerRedmineSearchInput.timer = window.setTimeout(loadPlannerTicketOptions, 250);
+}
+
+function clearPlannerLinkedTicket({ clearInput = true } = {}) {
+    state.planner.linkedTicket = null;
+    if (clearInput) {
+        els.plannerTaskRedmineSearch.value = "";
+    }
+    renderPlannerSyncedPanel();
+    renderPlannerMemberPicker(state.planner.editorTask?.memberIds || []);
 }
 
 async function loadPlannerTicketOptions() {
@@ -4625,14 +4657,18 @@ function clampProgress(value) {
 async function savePlannerTask(event) {
     event.preventDefault();
     const task = state.planner.editorTask;
+    const shouldUnlinkTask = Boolean(task?.redmineLinked && !els.plannerTaskRedmineSearch.value.trim());
     const selectedProject = findPlannerProject(els.plannerTaskProjectSearch.value);
     if (selectedProject) {
         els.plannerTaskProject.value = selectedProject.id;
     } else if (!els.plannerTaskProjectSearch.value.trim()) {
         els.plannerTaskProject.value = "";
     }
+    if (shouldUnlinkTask && state.planner.linkedTicket) {
+        clearPlannerLinkedTicket({ clearInput: false });
+    }
     clampPlannerProgressInput();
-    const memberIds = [...els.plannerTaskMembers.querySelectorAll("input[type='checkbox']:checked")].map((input) => Number(input.value));
+    const memberIds = selectedPlannerMemberIds();
     const body = {
         teamId: els.plannerTaskTeam.value,
         projectId: els.plannerTaskProject.value ? Number(els.plannerTaskProject.value) : null,
@@ -4648,6 +4684,9 @@ async function savePlannerTask(event) {
         memberIds
     };
     try {
+        if (shouldUnlinkTask) {
+            await apiJson(`/api/tasks/${task.id}/unlink`, { method: "POST" });
+        }
         const saved = await apiJson(task ? `/api/tasks/${task.id}` : "/api/tasks", {
             method: task ? "PATCH" : "POST",
             body

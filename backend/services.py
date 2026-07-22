@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SYNCED_FIELDS = {"statusId", "progress", "startDate", "dueDate", "memberIds"}
+SYNCED_FIELDS = {"priorityId", "statusId", "progress", "startDate", "dueDate", "memberIds"}
 DEFAULT_TEAM_ID = "default_team"
 DEFAULT_TEAM_NAME = "Default team"
 LOGGER = logging.getLogger("team_view.services")
@@ -1437,7 +1437,9 @@ def replace_ticket_assignees(db, ticket_id, issue):
 
 
 def map_status(name):
-    value = str(name or "").lower()
+    value = str(name or "").strip().lower()
+    if value == "new":
+        return "new"
     if "closed" in value or "done" in value:
         return "done"
     if "hold" in value:
@@ -1705,6 +1707,7 @@ def refresh_parent_progress_rollups(db, parent_task_ids):
 
 def _synced_fields_changed(existing, payload):
     field_map = {
+        "priorityId": "priorityId",
         "statusId": "statusId",
         "progress": "progress",
         "startDate": "startDate",
