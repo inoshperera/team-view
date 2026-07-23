@@ -3649,7 +3649,7 @@ function renderOrganizationTaskRow(task) {
                         <span class="status-pill ${escapeHtml(status?.colorClass || "")}">${escapeHtml(status?.label || task.statusId)}</span>
                     </div>
                     <h2>${escapeHtml(task.title)}</h2>
-                    ${task.description ? `<p class="card-desc">${escapeHtml(task.description)}</p>` : ""}
+                    ${task.description ? `<p class="card-desc">${renderLinkedText(task.description)}</p>` : ""}
                 </div>
                 <div class="org-task-actions">
                     <div class="org-member-icons" aria-label="Assigned members">${memberIcons}</div>
@@ -3690,7 +3690,7 @@ function renderOrganizationChildTaskRow(task) {
                     <span class="status-pill ${escapeHtml(status?.colorClass || "")}">${escapeHtml(status?.label || task.statusId)}</span>
                 </div>
                 <h3>${escapeHtml(task.title)}</h3>
-                ${task.description ? `<p class="card-desc">${escapeHtml(task.description)}</p>` : ""}
+                ${task.description ? `<p class="card-desc">${renderLinkedText(task.description)}</p>` : ""}
             </div>
             <div class="org-task-actions">
                 <div class="org-member-icons" aria-label="Assigned members">${memberIcons}</div>
@@ -3736,7 +3736,7 @@ function renderPlannerTaskCard(task) {
                 </div>
             </div>
             <h2>${escapeHtml(task.title)}</h2>
-            ${task.description ? `<p class="card-desc">${escapeHtml(task.description)}</p>` : ""}
+            ${task.description ? `<p class="card-desc">${renderLinkedText(task.description)}</p>` : ""}
             <div class="planner-card-grid">
                 <div><span>Project</span><strong>${escapeHtml(task.projectName || "Not set")}</strong></div>
                 <div><span>Priority</span><strong class="priority-val"><span class="priority-dot ${escapeHtml(priority?.colorClass || "")}"></span>${escapeHtml(priorityLabel)}</strong></div>
@@ -3803,7 +3803,7 @@ function renderPlannerTaskView(task, auditRows) {
         </div>
         <div class="task-view-section">
             <h3>Description</h3>
-            <p>${escapeHtml(task.description || "No description added.")}</p>
+            <p>${renderLinkedText(task.description || "No description added.")}</p>
         </div>
         <div class="task-view-section">
             <h3>Assigned members</h3>
@@ -4849,6 +4849,44 @@ function escapeHtml(value) {
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
+}
+
+function renderLinkedText(value) {
+    const text = String(value || "");
+    const urlPattern = /\b(?:https?:\/\/|www\.)[^\s<>"']+/gi;
+    let html = "";
+    let lastIndex = 0;
+    let match;
+    while ((match = urlPattern.exec(text)) !== null) {
+        const rawUrl = match[0];
+        const linkText = trimTrailingUrlPunctuation(rawUrl);
+        const trailing = rawUrl.slice(linkText.length);
+        const href = normalizedLinkHref(linkText);
+        html += escapeHtml(text.slice(lastIndex, match.index));
+        if (href) {
+            html += `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer noopener">${escapeHtml(linkText)}</a>`;
+        } else {
+            html += escapeHtml(linkText);
+        }
+        html += escapeHtml(trailing);
+        lastIndex = match.index + rawUrl.length;
+    }
+    html += escapeHtml(text.slice(lastIndex));
+    return html;
+}
+
+function trimTrailingUrlPunctuation(value) {
+    return String(value || "").replace(/[.,;:!?)]*$/g, "");
+}
+
+function normalizedLinkHref(value) {
+    const urlText = String(value || "").startsWith("www.") ? `https://${value}` : String(value || "");
+    try {
+        const url = new URL(urlText);
+        return ["http:", "https:"].includes(url.protocol) ? url.href : "";
+    } catch {
+        return "";
+    }
 }
 
 init();

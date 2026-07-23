@@ -1956,6 +1956,15 @@ h1 {
     overflow: hidden;
 }
 
+.card-desc a,
+.task-view-section a {
+    color: var(--accent);
+    font-weight: 800;
+    overflow-wrap: anywhere;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
 .issue-key-val {
     display: inline-flex;
     align-items: center;
