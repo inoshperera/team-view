@@ -6,9 +6,9 @@
     <title>Birdseye</title>
     <link rel="icon" href="assets/entgra-mark.jpeg">
     <link rel="apple-touch-icon" href="assets/entgra-mark.jpeg">
-    <link rel="stylesheet" href="styles.css?v=planner-1">
+    <link rel="stylesheet" href="styles.css?v=planner-2">
     <script src="config.example.js?v=planner-1"></script>
-    <script type="module" src="app.js?v=planner-1"></script>
+    <script type="module" src="app.js?v=planner-2"></script>
 </head>
 <body>
     <section class="login-shell is-hidden" id="loginShell" aria-labelledby="loginTitle">
@@ -141,14 +141,21 @@
                 <span>Member</span>
                 <select id="plannerMemberFilter"></select>
             </label>
-            <label class="check-row planner-view-toggle">
-                <input id="plannerListViewToggle" type="checkbox" checked>
-                <span>List</span>
+            <label class="field planner-view-mode">
+                <span>View</span>
+                <select id="plannerListViewToggle">
+                    <option value="list">List</option>
+                    <option value="board">Board</option>
+                </select>
             </label>
-            <div class="planner-toggle-row" id="plannerToggleRow" role="group" aria-label="Group tasks">
-                <button class="planner-segment is-selected" id="plannerGroupPriority" type="button">By priority</button>
-                <button class="planner-segment" id="plannerGroupCategory" type="button">By category</button>
-            </div>
+            <label class="field planner-group-field" id="plannerToggleRow">
+                <span>Group by</span>
+                <select id="plannerGroupSelect">
+                    <option value="priority">Priority</option>
+                    <option value="status">Status</option>
+                    <option value="category">Category</option>
+                </select>
+            </label>
             <button class="secondary-button planner-filter-button" id="plannerFilterButton" type="button" aria-expanded="false" title="Add filters" aria-label="Add filters">
                 <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="filter-plus-stem" d="M12 5v14"/><path d="M5 12h14"/></svg>
             </button>

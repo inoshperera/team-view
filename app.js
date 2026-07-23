@@ -197,8 +197,7 @@ const els = {
     plannerPriorityFilter: document.getElementById("plannerPriorityFilter"),
     plannerSearch: document.getElementById("plannerSearch"),
     plannerToggleRow: document.getElementById("plannerToggleRow"),
-    plannerGroupPriority: document.getElementById("plannerGroupPriority"),
-    plannerGroupCategory: document.getElementById("plannerGroupCategory"),
+    plannerGroupSelect: document.getElementById("plannerGroupSelect"),
     settingsPanel: document.getElementById("settingsPanel"),
     closeSettingsButton: document.getElementById("closeSettingsButton"),
     saveTeamsButton: null,
@@ -544,8 +543,7 @@ function bindEvents() {
     els.plannerCategoryFilter.addEventListener("change", () => updatePlannerFilter("category", els.plannerCategoryFilter.value));
     els.plannerPriorityFilter.addEventListener("change", () => updatePlannerFilter("priority", els.plannerPriorityFilter.value));
     els.plannerSearch.addEventListener("input", () => updatePlannerFilter("q", els.plannerSearch.value));
-    els.plannerGroupPriority.addEventListener("click", () => setPlannerGroup("priority"));
-    els.plannerGroupCategory.addEventListener("click", () => setPlannerGroup("category"));
+    els.plannerGroupSelect?.addEventListener("change", () => setPlannerGroup(els.plannerGroupSelect.value));
     els.plannerNonePriorityTile.addEventListener("click", toggleNonePriorityTasksFirst);
     els.closePlannerTaskButton.addEventListener("click", closePlannerEditor);
     els.cancelPlannerTaskButton.addEventListener("click", closePlannerEditor);
@@ -773,7 +771,7 @@ function syncPlannerControls() {
     els.plannerMemberField.classList.toggle("is-hidden", isOrganizationScope);
     els.plannerFilterButton.classList.toggle("is-hidden", isOrganizationScope);
     els.plannerToggleRow.classList.toggle("is-hidden", isOrganizationScope);
-    els.plannerListViewToggle.checked = state.planner.listView;
+    els.plannerListViewToggle.value = state.planner.listView ? "list" : "board";
     const users = filteredPlannerUsersForTeam(state.planner.filters.teamId);
     els.plannerMemberFilter.innerHTML = `<option value="">All members</option>${users.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("")}`;
     els.plannerMemberFilter.value = state.planner.filters.memberId;
@@ -782,8 +780,9 @@ function syncPlannerControls() {
     els.plannerPriorityFilter.innerHTML = `<option value="">All priorities</option>${state.planner.priorities.map((item) => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("")}`;
     els.plannerPriorityFilter.value = state.planner.filters.priority;
     els.plannerSearch.value = state.planner.filters.q;
-    els.plannerGroupPriority.classList.toggle("is-selected", state.planner.groupMode === "priority");
-    els.plannerGroupCategory.classList.toggle("is-selected", state.planner.groupMode === "category");
+    if (els.plannerGroupSelect) {
+        els.plannerGroupSelect.value = state.planner.groupMode;
+    }
     const hasAdvancedFilters = Boolean(state.planner.filters.category || state.planner.filters.priority || state.planner.filters.q);
     const showAdvanced = !isOrganizationScope && (state.planner.advancedFiltersOpen || hasAdvancedFilters);
     els.plannerFilterButton.classList.toggle("is-selected", showAdvanced);
@@ -897,7 +896,7 @@ function togglePlannerAdvancedFilters() {
 }
 
 function togglePlannerListView() {
-    state.planner.listView = els.plannerListViewToggle.checked;
+    state.planner.listView = els.plannerListViewToggle.value === "list";
     syncPlannerControls();
     renderPlanner();
 }
@@ -3213,7 +3212,7 @@ function renderPlanner() {
         els.plannerBoard.classList.add("is-lanes");
         els.plannerBoard.classList.remove("is-list", "is-organization-list");
         els.plannerBoard.innerHTML = plannerLaneItems().map((lane) => {
-            const laneTasks = tasks.filter((task) => state.planner.groupMode === "priority" ? task.priorityId === lane.id : task.categoryId === lane.id);
+            const laneTasks = tasks.filter((task) => task[plannerGroupField()] === lane.id);
             return `
                 <section class="planner-lane ${escapeHtml(lane.colorClass || "")}" data-planner-lane="${escapeHtml(lane.id)}">
                     <div class="planner-lane-title">
@@ -3429,7 +3428,7 @@ function clearPlannerDropState() {
 }
 
 async function movePlannerTaskToGroup(task, groupId) {
-    const field = state.planner.groupMode === "category" ? "categoryId" : "priorityId";
+    const field = plannerGroupField();
     if (String(task[field] || "") === String(groupId)) {
         return;
     }
@@ -3533,9 +3532,23 @@ function nonePrioritySortedTasks(tasks) {
 }
 
 function plannerLaneItems() {
-    return state.planner.groupMode === "priority"
-        ? state.planner.priorities.filter((priority) => priority.id !== "none")
-        : state.planner.categories;
+    if (state.planner.groupMode === "category") {
+        return state.planner.categories;
+    }
+    if (state.planner.groupMode === "status") {
+        return state.planner.statuses;
+    }
+    return state.planner.priorities.filter((priority) => priority.id !== "none");
+}
+
+function plannerGroupField() {
+    if (state.planner.groupMode === "category") {
+        return "categoryId";
+    }
+    if (state.planner.groupMode === "status") {
+        return "statusId";
+    }
+    return "priorityId";
 }
 
 function isOrganizationPlannerScope() {
@@ -3564,7 +3577,7 @@ function organizationSortedTasks(tasks) {
 }
 
 function renderOrganizationPriorityLists(tasks) {
-    const groupKey = state.planner.groupMode === "category" ? "categoryId" : "priorityId";
+    const groupKey = plannerGroupField();
     const grouped = plannerLaneItems()
         .map((item) => ({
             item,

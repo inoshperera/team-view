@@ -1338,10 +1338,10 @@ h1 {
 }
 
 .planner-controls {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(220px, 1.15fr) minmax(220px, 1.15fr) minmax(112px, 0.42fr) minmax(150px, 0.5fr) 42px minmax(170px, 0.7fr) minmax(170px, 0.7fr);
     align-items: end;
     gap: 10px;
-    flex-wrap: wrap;
     margin-bottom: 18px;
     padding: 12px;
     background: var(--surface);
@@ -1350,27 +1350,28 @@ h1 {
 }
 
 .planner-controls .field {
-    min-width: 150px;
+    min-width: 0;
 }
 
 .planner-controls .field select,
 .planner-controls .field input {
     min-height: 38px;
+    min-width: 0;
+    width: 100%;
 }
 
 #plannerTeamField,
 #plannerMemberField {
-    flex: 1 1 220px;
-    max-width: 330px;
+    max-width: none;
 }
 
 .planner-advanced-filter {
-    flex: 0 1 180px;
+    min-width: 0;
 }
 
 .planner-advanced-filter:last-of-type {
-    flex: 1 1 210px;
-    max-width: 300px;
+    grid-column: 1 / span 2;
+    max-width: 460px;
 }
 
 .planner-filter-button {
@@ -1388,50 +1389,9 @@ h1 {
     display: none;
 }
 
-.planner-view-toggle {
-    min-height: 38px;
-    align-self: end;
-    padding: 6px 10px;
-    background: #f8fafc;
-    font-size: 0.82rem;
-}
-
-.planner-toggle-row {
-    position: relative;
-    align-self: end;
-    display: inline-grid;
-    grid-template-columns: 1fr 1fr;
-    min-height: 38px;
-    padding: 3px;
-    border: 1px solid #cbd5e1;
-    border-radius: 999px;
-    background: #eef2f7;
-    overflow: hidden;
-    box-shadow: none;
-}
-
-.planner-segment {
-    min-width: 98px;
-    border: 0;
-    border-radius: 999px;
-    background: transparent;
-    color: var(--muted);
-    font: inherit;
-    font-size: 0.82rem;
-    font-weight: 800;
-    cursor: pointer;
-    transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
-}
-
-.planner-segment.is-selected {
-    background: #fff;
-    color: #1d4ed8;
-    box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
-}
-
-.planner-segment:focus-visible {
-    outline: 2px solid #93c5fd;
-    outline-offset: 2px;
+.planner-view-mode,
+.planner-group-field {
+    min-width: 0;
 }
 
 .secondary-button.is-selected {
@@ -2332,6 +2292,15 @@ h1 {
 .priority-dot.pri-medium { background: #be8b00; }
 .priority-dot.pri-low { background: #16845b; }
 .priority-dot.pri-none { background: #94a3b8; }
+.priority-dot.chip-dev { background: #1d4ed8; }
+.priority-dot.chip-cust { background: #b45309; }
+.priority-dot.chip-ops { background: #0e7490; }
+.priority-dot.chip-hr { background: #6d5bd0; }
+.priority-dot.pill-new { background: #1d4ed8; }
+.priority-dot.pill-working { background: #116b4b; }
+.priority-dot.pill-blocked { background: #a53428; }
+.priority-dot.pill-onhold { background: #8a5c00; }
+.priority-dot.pill-done { background: #4b5563; }
 
 .planner-none-list-banner {
     display: flex;
@@ -3420,6 +3389,20 @@ h1 {
 }
 
 @media (max-width: 980px) {
+    .planner-controls {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .planner-filter-button {
+        align-self: end;
+        justify-self: start;
+    }
+
+    .planner-advanced-filter:last-of-type {
+        grid-column: auto;
+        max-width: none;
+    }
+
     .planner-board.is-lanes,
     .planner-board.is-list,
     .planner-board.is-list .planner-card-grid {
@@ -3446,6 +3429,10 @@ h1 {
 }
 
 @media (max-width: 820px) {
+    .planner-controls {
+        grid-template-columns: 1fr;
+    }
+
     .app-shell {
         width: calc(100% - 20px);
         padding-top: 18px;
