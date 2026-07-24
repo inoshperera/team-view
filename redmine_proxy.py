@@ -201,6 +201,7 @@ class TeamViewHandler(BaseHTTPRequestHandler):
                 "teams": services.list_teams(DB, restrict_to=lead_teams),
                 "users": services.list_users(DB),
                 "projects": services.list_projects(DB, restrict_to_teams=lead_teams),
+                "preferences": services.user_preferences(DB, user["user_id"]),
                 "directoryWarnings": directory_warnings,
                 **services.list_lookups(DB),
             })
@@ -217,6 +218,9 @@ class TeamViewHandler(BaseHTTPRequestHandler):
             db_user = self.db_user(user)
             lead_teams = services.teams_for_user(DB, db_user["id"]) if db_user["role"] in ("lead", "member") else None
             self.json(200, {"projects": services.list_projects(DB, restrict_to_teams=lead_teams)})
+        elif path == "/api/preferences" and method == "PATCH":
+            preferences = services.save_user_preferences(DB, user["user_id"], self.body_json())
+            self.json(200, {"preferences": preferences})
         elif path == "/api/redmine/projects" and method == "GET":
             projects = services.list_redmine_projects(DB, REDMINE, user.get("redmine_api_key"), query.get("q", ""))
             self.json(200, {"projects": projects})

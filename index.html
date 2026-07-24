@@ -6,9 +6,9 @@
     <title>Birdseye</title>
     <link rel="icon" href="assets/entgra-mark.jpeg">
     <link rel="apple-touch-icon" href="assets/entgra-mark.jpeg">
-    <link rel="stylesheet" href="styles.css?v=planner-4">
+    <link rel="stylesheet" href="styles.css?v=planner-5">
     <script src="config.example.js?v=planner-1"></script>
-    <script type="module" src="app.js?v=planner-4"></script>
+    <script type="module" src="app.js?v=planner-5"></script>
 </head>
 <body>
     <section class="login-shell is-hidden" id="loginShell" aria-labelledby="loginTitle">
@@ -159,6 +159,10 @@
                     <option value="status">Status</option>
                     <option value="category">Category</option>
                 </select>
+            </label>
+            <label class="check-row planner-hide-done-toggle">
+                <input id="plannerHideDoneTasks" type="checkbox">
+                <span>Hide done</span>
             </label>
             <button class="secondary-button planner-filter-button" id="plannerFilterButton" type="button" aria-expanded="false" title="Add filters" aria-label="Add filters">
                 <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="filter-plus-stem" d="M12 5v14"/><path d="M5 12h14"/></svg>

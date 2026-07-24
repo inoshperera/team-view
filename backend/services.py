@@ -796,6 +796,17 @@ def teams_for_user(db, user_id):
 def ensure_planner_schema(db):
     db.execute(
         """
+        CREATE TABLE IF NOT EXISTS user_preferences (
+          user_id BIGINT UNSIGNED NOT NULL,
+          hide_done_tasks TINYINT(1) NOT NULL DEFAULT 0,
+          updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (user_id),
+          CONSTRAINT fk_user_preferences_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
+    )
+    db.execute(
+        """
         CREATE TABLE IF NOT EXISTS task_audit_log (
           id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
           task_id BIGINT UNSIGNED NOT NULL,
@@ -947,6 +958,26 @@ def list_lookups(db):
         "priorities": db.query("SELECT id,label,color_class AS colorClass,sort_order AS sortOrder FROM priorities ORDER BY sort_order"),
         "statuses": db.query("SELECT id,label,color_class AS colorClass,is_terminal AS isTerminal FROM statuses ORDER BY sort_order"),
     }
+
+
+def user_preferences(db, user_id):
+    row = db.one("SELECT hide_done_tasks FROM user_preferences WHERE user_id=%s", (user_id,))
+    return {
+        "hideDoneTasks": bool(row.get("hide_done_tasks")) if row else False,
+    }
+
+
+def save_user_preferences(db, user_id, payload):
+    hide_done = 1 if payload.get("hideDoneTasks") else 0
+    db.execute(
+        """
+        INSERT INTO user_preferences (user_id, hide_done_tasks)
+        VALUES (%s,%s)
+        ON DUPLICATE KEY UPDATE hide_done_tasks=VALUES(hide_done_tasks)
+        """,
+        (user_id, hide_done),
+    )
+    return user_preferences(db, user_id)
 
 
 def list_teams(db, restrict_to=None):
@@ -1545,6 +1576,10 @@ def date_value(value):
 def list_tasks(db, user, filters):
     where = ["t.deleted_at IS NULL"]
     args = []
+    preferences = user_preferences(db, user["id"])
+    hide_done = truthy(filters.get("hide_done")) if "hide_done" in filters else preferences["hideDoneTasks"]
+    if hide_done:
+        where.append("t.status_id<>'done'")
     if user["role"] in ("lead", "member"):
         lead_teams = teams_for_user(db, user["id"])
         if lead_teams:
@@ -1582,6 +1617,10 @@ def list_tasks(db, user, filters):
         args,
     )
     return [task_payload(db, row) for row in rows]
+
+
+def truthy(value):
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def get_task(db, task_id):

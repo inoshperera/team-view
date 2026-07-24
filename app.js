@@ -65,7 +65,11 @@ const state = {
         editorParentTaskId: null,
         linkedTicket: null,
         syncingRedmine: false,
-        syncingTaskIds: new Set()
+        syncingTaskIds: new Set(),
+        preferences: {
+            hideDoneTasks: false,
+            saving: false
+        }
     },
     summaries: [],
     previousSummaries: [],
@@ -201,6 +205,7 @@ const els = {
     plannerSearch: document.getElementById("plannerSearch"),
     plannerToggleRow: document.getElementById("plannerToggleRow"),
     plannerGroupSelect: document.getElementById("plannerGroupSelect"),
+    plannerHideDoneTasks: document.getElementById("plannerHideDoneTasks"),
     settingsPanel: document.getElementById("settingsPanel"),
     closeSettingsButton: document.getElementById("closeSettingsButton"),
     saveTeamsButton: null,
@@ -548,6 +553,7 @@ function bindEvents() {
     els.plannerPriorityFilter.addEventListener("change", () => updatePlannerFilter("priority", els.plannerPriorityFilter.value));
     els.plannerSearch.addEventListener("input", () => updatePlannerFilter("q", els.plannerSearch.value));
     els.plannerGroupSelect?.addEventListener("change", () => setPlannerGroup(els.plannerGroupSelect.value));
+    els.plannerHideDoneTasks.addEventListener("change", handlePlannerHideDoneChange);
     els.plannerNonePriorityTile.addEventListener("click", toggleNonePriorityTasksFirst);
     els.closePlannerTaskButton.addEventListener("click", closePlannerEditor);
     els.cancelPlannerTaskButton.addEventListener("click", closePlannerEditor);
@@ -697,6 +703,7 @@ async function loadPlannerBootstrap() {
     state.planner.categories = payload.categories || [];
     state.planner.priorities = payload.priorities || [];
     state.planner.statuses = payload.statuses || [];
+    state.planner.preferences.hideDoneTasks = Boolean(payload.preferences?.hideDoneTasks);
     state.teams = (payload.teams || []).map((team) => ({
         id: team.id,
         name: team.name,
@@ -751,6 +758,7 @@ async function refreshPlanner() {
         const mapped = key === "teamId" ? "team_id" : key === "memberId" ? "member_id" : key;
         params.set(mapped, value);
     });
+    params.set("hide_done", state.planner.preferences.hideDoneTasks ? "1" : "0");
     setRefreshState("loading", "Loading high-level tasks.");
     render();
     try {
@@ -796,6 +804,8 @@ function syncPlannerControls() {
     els.plannerFilterButton.classList.toggle("is-hidden", isOrganizationScope);
     els.plannerToggleRow.classList.toggle("is-hidden", isOrganizationScope);
     els.plannerListViewToggle.value = state.planner.listView ? "list" : "board";
+    els.plannerHideDoneTasks.checked = state.planner.preferences.hideDoneTasks;
+    els.plannerHideDoneTasks.disabled = state.planner.preferences.saving;
     const users = filteredPlannerUsersForTeam(state.planner.filters.teamId);
     els.plannerMemberFilter.innerHTML = `<option value="">All members</option>${users.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("")}`;
     els.plannerMemberFilter.value = state.planner.filters.memberId;
@@ -929,6 +939,30 @@ function setPlannerGroup(groupMode) {
     state.planner.groupMode = groupMode;
     syncPlannerControls();
     renderPlanner();
+}
+
+async function handlePlannerHideDoneChange() {
+    const previous = state.planner.preferences.hideDoneTasks;
+    const next = els.plannerHideDoneTasks.checked;
+    state.planner.preferences.hideDoneTasks = next;
+    state.planner.preferences.saving = true;
+    syncPlannerControls();
+    renderPlanner();
+    try {
+        const payload = await apiJson("/api/preferences", {
+            method: "PATCH",
+            body: { hideDoneTasks: next }
+        });
+        state.planner.preferences.hideDoneTasks = Boolean(payload.preferences?.hideDoneTasks);
+        await refreshPlanner();
+    } catch (error) {
+        state.planner.preferences.hideDoneTasks = previous;
+        setRefreshState("failed", error.message || "Unable to save planner preference.");
+        render();
+    } finally {
+        state.planner.preferences.saving = false;
+        syncPlannerControls();
+    }
 }
 
 function toggleNonePriorityTasksFirst() {
@@ -3210,7 +3244,7 @@ function renderPlannerUserChip() {
 
 function renderPlanner() {
     syncPlannerControls();
-    const tasks = state.planner.tasks;
+    const tasks = plannerVisibleTasks();
     const openTasks = tasks.filter((task) => task.statusId !== "done");
     const teamsInScope = new Set(tasks.map((task) => task.teamId));
     els.plannerTeamCount.textContent = state.auth.user?.role === "lead" ? 1 : (teamsInScope.size || state.planner.teams.length);
@@ -3321,6 +3355,12 @@ function renderPlanner() {
             }
         });
     });
+}
+
+function plannerVisibleTasks() {
+    return state.planner.preferences.hideDoneTasks
+        ? state.planner.tasks.filter((task) => task.statusId !== "done")
+        : state.planner.tasks;
 }
 
 function bindPlannerDragAndDrop() {
@@ -3531,9 +3571,14 @@ function upsertPlannerTaskInState(task) {
         return;
     }
     const id = String(task.id);
+    const shouldRemove = state.planner.preferences.hideDoneTasks && task.statusId === "done";
     const replaceInList = (tasks) => {
         const index = tasks.findIndex((item) => String(item.id) === id);
         if (index >= 0) {
+            if (shouldRemove) {
+                tasks.splice(index, 1);
+                return true;
+            }
             tasks[index] = task;
             return true;
         }

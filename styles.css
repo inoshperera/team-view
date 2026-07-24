@@ -1407,6 +1407,12 @@ h1 {
     min-width: 0;
 }
 
+.planner-hide-done-toggle {
+    align-self: end;
+    min-height: 38px;
+    padding: 7px 10px;
+}
+
 .secondary-button.is-selected {
     background: #fff;
     border-color: var(--accent);
