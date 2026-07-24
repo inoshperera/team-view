@@ -3893,6 +3893,7 @@ function renderPlannerTaskView(task, auditRows) {
     const due = dueLabel(task.dueDate);
     const teamName = teamDisplayName(team) || "Not set";
     const syncing = isPlannerTaskSyncing(task.id);
+    const issueUrl = task.redmineIssueId ? buildIssueUrl(task.redmineIssueId) : "";
     els.plannerTaskViewTitle.textContent = task.title;
     els.plannerTaskViewEyebrow.textContent = `Task #${task.id} · ${teamName}`;
     els.plannerTaskViewBody.innerHTML = `
@@ -3902,11 +3903,19 @@ function renderPlannerTaskView(task, auditRows) {
                     <strong>${escapeHtml(task.issueKey || `Issue ${task.redmineIssueId}`)}</strong>
                     <span>Redmine-owned fields are refreshed from the linked ticket and its sub-tickets.</span>
                 </div>
-                <button type="button" class="synced-sync-btn" data-planner-view-sync="${escapeHtml(task.id)}" ${syncing ? "disabled" : ""}>
-                    ${syncing
-                        ? `<span class="spinner spinner-inline" aria-hidden="true"></span> Syncing`
-                        : `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M16 8h5V3"/></svg> Sync`}
-                </button>
+                <div class="synced-panel-actions">
+                    ${issueUrl ? `
+                        <a class="synced-open-link" href="${escapeHtml(issueUrl)}" target="_blank" rel="noopener noreferrer">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+                            Open ticket
+                        </a>
+                    ` : ""}
+                    <button type="button" class="synced-sync-btn" data-planner-view-sync="${escapeHtml(task.id)}" ${syncing ? "disabled" : ""}>
+                        ${syncing
+                            ? `<span class="spinner spinner-inline" aria-hidden="true"></span> Syncing`
+                            : `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M16 8h5V3"/></svg> Sync`}
+                    </button>
+                </div>
             </div>
         ` : ""}
         <div class="task-view-summary">
@@ -4724,6 +4733,7 @@ function renderPlannerSyncedPanel() {
     const startVal = ticket.startDate || "Not set";
     const dueVal = ticket.dueDate || "Not set";
     const progressVal = ticket.progress ?? els.plannerTaskProgress.value ?? 0;
+    const issueUrl = ticket.redmineIssueId ? buildIssueUrl(ticket.redmineIssueId) : "";
 
     const syncedIcon = `<svg class="synced-icon" xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> Synced from Redmine`;
 
@@ -4734,6 +4744,12 @@ function renderPlannerSyncedPanel() {
                 <p class="synced-panel-desc">Priority, status, progress, dates and assignees are kept in sync with <strong>${escapeHtml(ticket.issueKey || String(ticket.redmineIssueId))}</strong> and its sub-tickets by the backend. Update them in Redmine to change them here.</p>
             </div>
             <div class="synced-panel-actions">
+                ${issueUrl ? `
+                    <a class="synced-open-link" href="${escapeHtml(issueUrl)}" target="_blank" rel="noopener noreferrer">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+                        Open ticket
+                    </a>
+                ` : ""}
                 <button type="button" class="synced-sync-btn" id="syncPlannerTicketButton" ${syncing ? "disabled" : ""}>
                     ${syncing
                         ? `<span class="spinner spinner-inline" aria-hidden="true"></span> Syncing`

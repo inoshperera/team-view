@@ -2501,6 +2501,7 @@ h1 {
     flex-shrink: 0;
 }
 
+.synced-open-link,
 .synced-sync-btn,
 .synced-unlink-btn {
     display: inline-flex;
@@ -2518,7 +2519,13 @@ h1 {
     font-size: 0.85rem;
     font-weight: 700;
     cursor: pointer;
+    text-decoration: none;
     white-space: nowrap;
+}
+
+.synced-open-link {
+    background: #fff;
+    color: #3b4fcd;
 }
 
 .synced-sync-btn {
@@ -2536,6 +2543,7 @@ h1 {
     background: #3345bd;
 }
 
+.synced-open-link:hover,
 .synced-unlink-btn:hover:not(:disabled) {
     background: #e0e7ff;
 }
@@ -3541,6 +3549,7 @@ h1 {
         width: 100%;
     }
 
+    .synced-open-link,
     .synced-sync-btn,
     .synced-unlink-btn {
         flex: 1 1 0;
