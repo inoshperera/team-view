@@ -1310,6 +1310,18 @@ h1 {
     background: var(--hover-bg, #f5f5f5);
 }
 
+.user-menu-check {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+}
+
+.user-menu-check input {
+    width: 16px;
+    height: 16px;
+}
+
 .planner-avatar,
 .mini-avatar {
     width: 30px;
@@ -1405,12 +1417,6 @@ h1 {
 .planner-view-mode,
 .planner-group-field {
     min-width: 0;
-}
-
-.planner-hide-done-toggle {
-    align-self: end;
-    min-height: 38px;
-    padding: 7px 10px;
 }
 
 .secondary-button.is-selected {

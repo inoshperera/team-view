@@ -205,7 +205,6 @@ const els = {
     plannerSearch: document.getElementById("plannerSearch"),
     plannerToggleRow: document.getElementById("plannerToggleRow"),
     plannerGroupSelect: document.getElementById("plannerGroupSelect"),
-    plannerHideDoneTasks: document.getElementById("plannerHideDoneTasks"),
     settingsPanel: document.getElementById("settingsPanel"),
     closeSettingsButton: document.getElementById("closeSettingsButton"),
     saveTeamsButton: null,
@@ -553,7 +552,6 @@ function bindEvents() {
     els.plannerPriorityFilter.addEventListener("change", () => updatePlannerFilter("priority", els.plannerPriorityFilter.value));
     els.plannerSearch.addEventListener("input", () => updatePlannerFilter("q", els.plannerSearch.value));
     els.plannerGroupSelect?.addEventListener("change", () => setPlannerGroup(els.plannerGroupSelect.value));
-    els.plannerHideDoneTasks.addEventListener("change", handlePlannerHideDoneChange);
     els.plannerNonePriorityTile.addEventListener("click", toggleNonePriorityTasksFirst);
     els.closePlannerTaskButton.addEventListener("click", closePlannerEditor);
     els.cancelPlannerTaskButton.addEventListener("click", closePlannerEditor);
@@ -804,8 +802,11 @@ function syncPlannerControls() {
     els.plannerFilterButton.classList.toggle("is-hidden", isOrganizationScope);
     els.plannerToggleRow.classList.toggle("is-hidden", isOrganizationScope);
     els.plannerListViewToggle.value = state.planner.listView ? "list" : "board";
-    els.plannerHideDoneTasks.checked = state.planner.preferences.hideDoneTasks;
-    els.plannerHideDoneTasks.disabled = state.planner.preferences.saving;
+    const menuHideDone = document.getElementById("userMenuHideDoneTasks");
+    if (menuHideDone) {
+        menuHideDone.checked = state.planner.preferences.hideDoneTasks;
+        menuHideDone.disabled = state.planner.preferences.saving;
+    }
     const users = filteredPlannerUsersForTeam(state.planner.filters.teamId);
     els.plannerMemberFilter.innerHTML = `<option value="">All members</option>${users.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("")}`;
     els.plannerMemberFilter.value = state.planner.filters.memberId;
@@ -943,7 +944,7 @@ function setPlannerGroup(groupMode) {
 
 async function handlePlannerHideDoneChange() {
     const previous = state.planner.preferences.hideDoneTasks;
-    const next = els.plannerHideDoneTasks.checked;
+    const next = Boolean(document.getElementById("userMenuHideDoneTasks")?.checked);
     state.planner.preferences.hideDoneTasks = next;
     state.planner.preferences.saving = true;
     syncPlannerControls();
@@ -3222,6 +3223,10 @@ function renderPlannerUserChip() {
         </button>
         <div class="user-menu is-hidden" id="userMenu">
             <button class="user-menu-item" type="button" id="userMenuSettings">Team Details</button>
+            <label class="user-menu-item user-menu-check">
+                <input id="userMenuHideDoneTasks" type="checkbox" ${state.planner.preferences.hideDoneTasks ? "checked" : ""} ${state.planner.preferences.saving ? "disabled" : ""}>
+                <span>Hide done tasks</span>
+            </label>
             <button class="user-menu-item" type="button" id="userMenuLogout">Sign out</button>
         </div>
     `;
@@ -3236,6 +3241,10 @@ function renderPlannerUserChip() {
         document.getElementById("userMenu").classList.add("is-hidden");
         openSettings();
     });
+    document.getElementById("userMenuHideDoneTasks").addEventListener("click", (event) => {
+        event.stopPropagation();
+    });
+    document.getElementById("userMenuHideDoneTasks").addEventListener("change", handlePlannerHideDoneChange);
     document.getElementById("userMenuLogout").addEventListener("click", () => {
         document.getElementById("userMenu").classList.add("is-hidden");
         handleLogout();
