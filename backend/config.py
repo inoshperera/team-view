@@ -26,7 +26,7 @@ class AppConfig:
 
 def load_config() -> AppConfig:
     return AppConfig(
-        host=os.environ.get("PROXY_HOST", "localhost").strip() or "localhost",
+        host=os.environ.get("PROXY_HOST", "127.0.0.1").strip() or "127.0.0.1",
         port=int(os.environ.get("PROXY_PORT", "9000")),
         redmine_url=os.environ.get("REDMINE_URL", "https://roadmap.staging.entgra.net").strip().rstrip("/"),
         db_host=os.environ.get("TEAM_VIEW_DB_HOST", "localhost").strip() or "localhost",

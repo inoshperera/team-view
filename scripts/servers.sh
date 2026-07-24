@@ -8,9 +8,9 @@ PROXY_PID_FILE="$RUN_DIR/proxy.pid"
 APP_LOG="$RUN_DIR/app.log"
 PROXY_LOG="$RUN_DIR/proxy.log"
 
-APP_HOST="${APP_HOST:-localhost}"
+APP_HOST="${APP_HOST:-127.0.0.1}"
 APP_PORT="${APP_PORT:-8000}"
-PROXY_HOST="${PROXY_HOST:-localhost}"
+PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
 PROXY_PORT="${PROXY_PORT:-9000}"
 if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
     PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"

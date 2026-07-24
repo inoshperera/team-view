@@ -323,6 +323,11 @@ class TeamViewHandler(BaseHTTPRequestHandler):
             task = services.link_task_to_ticket(DB, REDMINE, user.get("redmine_api_key"), db_user, task_id, body.get("redmineIssue") or body.get("value"))
             self.audit("task_link_redmine", user=user, outcome="success", task_id=task.get("id"), redmine_issue_id=task.get("redmineIssueId"))
             self.json(200, {"task": task})
+        elif len(parts) == 4 and parts[3] == "sync-redmine" and method == "POST":
+            self.audit("task_sync_redmine", user=user, outcome="attempt", task_id=task_id)
+            task = services.sync_linked_task(DB, REDMINE, user.get("redmine_api_key"), db_user, task_id)
+            self.audit("task_sync_redmine", user=user, outcome="success", task_id=task.get("id"), redmine_issue_id=task.get("redmineIssueId"))
+            self.json(200, {"task": task})
         elif len(parts) == 4 and parts[3] == "unlink" and method == "POST":
             self.audit("task_unlink_redmine", user=user, outcome="attempt", task_id=task_id)
             task = services.unlink_task(DB, db_user, task_id)

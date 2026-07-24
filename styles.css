@@ -95,6 +95,13 @@ h1 {
     padding: 0 18px;
 }
 
+.redmine-sync-button {
+    min-height: 40px;
+    padding: 0 16px;
+    background: #0f766e;
+    box-shadow: 0 8px 20px rgba(15, 118, 110, 0.2);
+}
+
 .freshness {
     display: flex;
     align-items: center;
@@ -202,6 +209,12 @@ h1 {
     height: 16px;
     border-color: rgba(255, 255, 255, 0.42);
     border-top-color: #ffffff;
+}
+
+.spinner-inline {
+    width: 13px;
+    height: 13px;
+    border-width: 2px;
 }
 
 @keyframes spin {
@@ -2039,6 +2052,28 @@ h1 {
     min-width: 0;
 }
 
+.task-view-redmine-panel {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 14px;
+    border: 1px solid #bdd0ff;
+    border-radius: 8px;
+    background: #edf1ff;
+}
+
+.task-view-redmine-panel strong,
+.task-view-redmine-panel span {
+    display: block;
+}
+
+.task-view-redmine-panel span {
+    margin-top: 3px;
+    color: #4b5c8a;
+    font-size: 0.84rem;
+}
+
 .task-view-section h3 {
     margin: 0 0 8px;
     font-size: 0.98rem;
@@ -2459,11 +2494,21 @@ h1 {
     line-height: 1.45;
 }
 
+.synced-panel-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.synced-sync-btn,
 .synced-unlink-btn {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 5px;
     flex-shrink: 0;
+    min-height: 34px;
     padding: 6px 12px;
     border: 1px solid #bdd0ff;
     border-radius: 8px;
@@ -2476,7 +2521,22 @@ h1 {
     white-space: nowrap;
 }
 
-.synced-unlink-btn:hover {
+.synced-sync-btn {
+    background: #3b4fcd;
+    color: #fff;
+}
+
+.synced-sync-btn:disabled,
+.synced-unlink-btn:disabled {
+    cursor: wait;
+    opacity: 0.72;
+}
+
+.synced-sync-btn:hover:not(:disabled) {
+    background: #3345bd;
+}
+
+.synced-unlink-btn:hover:not(:disabled) {
     background: #e0e7ff;
 }
 
@@ -3469,6 +3529,21 @@ h1 {
 
     .refresh-button {
         width: 100%;
+    }
+
+    .synced-panel-head,
+    .task-view-redmine-panel {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .synced-panel-actions {
+        width: 100%;
+    }
+
+    .synced-sync-btn,
+    .synced-unlink-btn {
+        flex: 1 1 0;
     }
 
     .period-panel,

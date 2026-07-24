@@ -1796,7 +1796,7 @@ def normalize_task_input(payload):
 
 
 def can_mutate_team(db, user, team_id):
-    if user["role"] == "manager":
+    if user["role"] in ("manager", "admin"):
         return True
     if user["role"] == "lead":
         return team_id in teams_for_user(db, user["id"])
@@ -1937,8 +1937,47 @@ def unlink_task(db, user, task_id):
     return updated
 
 
+def apply_redmine_ticket_to_task(db, user, task, ticket, audit_action="redmine_sync"):
+    db.execute(
+        """
+        UPDATE tasks
+        SET status_id=%s, priority_id=%s, progress=%s, start_date=%s, due_date=%s, last_redmine_sync_at=UTC_TIMESTAMP()
+        WHERE id=%s
+        """,
+        (ticket["statusId"], ticket["priorityId"], ticket["progress"], ticket["startDate"] or None, ticket["dueDate"] or None, task["id"]),
+    )
+    db.execute("DELETE FROM task_assignments WHERE task_id=%s", (task["id"],))
+    for member_id in ticket_subtree_assignee_ids(db, ticket["id"]) or ticket["assigneeIds"]:
+        db.execute(
+            "INSERT IGNORE INTO task_assignments (task_id,user_id,source) VALUES (%s,%s,'redmine')",
+            (task["id"], member_id),
+        )
+    refresh_parent_progress_rollup(db, task["id"])
+    refresh_parent_progress_rollup(db, task.get("parentTaskId"))
+    updated = get_task(db, task["id"])
+    if user and audit_action:
+        diff = task_change_diff(task, updated)
+        if diff["changes"]:
+            record_task_audit(db, task["id"], user["id"], audit_action, diff)
+    return updated
+
+
+def sync_linked_task(db, redmine, api_key, user, task_id):
+    task = get_task(db, task_id)
+    if not task:
+        raise KeyError("Task not found.")
+    if not can_mutate_team(db, user, task["teamId"]):
+        raise PermissionError("You do not have access to this team.")
+    if not task.get("redmineLinked") or not task.get("redmineIssueId"):
+        raise ValueError("This task is not linked to a Redmine ticket.")
+    ticket = refresh_ticket(db, redmine, api_key, task["redmineIssueId"])
+    if not ticket:
+        raise ValueError("Unable to refresh the linked Redmine ticket.")
+    return apply_redmine_ticket_to_task(db, user, task, ticket)
+
+
 def sync_linked_tasks(db, redmine, api_key, user):
-    if user["role"] != "manager":
+    if user["role"] not in ("manager", "admin"):
         raise PermissionError("Only managers can run Redmine sync.")
 
     rows = db.query(
@@ -1956,26 +1995,10 @@ def sync_linked_tasks(db, redmine, api_key, user):
         if not ticket:
             continue
         task = get_task(db, row["task_id"])
-        db.execute(
-            """
-            UPDATE tasks
-            SET status_id=%s, priority_id=%s, progress=%s, start_date=%s, due_date=%s, last_redmine_sync_at=UTC_TIMESTAMP()
-            WHERE id=%s
-            """,
-            (ticket["statusId"], ticket["priorityId"], ticket["progress"], ticket["startDate"] or None, ticket["dueDate"] or None, row["task_id"]),
-        )
-        db.execute("DELETE FROM task_assignments WHERE task_id=%s", (row["task_id"],))
-        for member_id in ticket_subtree_assignee_ids(db, ticket["id"]) or ticket["assigneeIds"]:
-            db.execute(
-                "INSERT IGNORE INTO task_assignments (task_id,user_id,source) VALUES (%s,%s,'redmine')",
-                (row["task_id"], member_id),
-            )
-        if task:
-            parent_rollups.add(task.get("parentTaskId"))
-            updated = get_task(db, row["task_id"])
-            diff = task_change_diff(task, updated)
-            if diff["changes"]:
-                record_task_audit(db, row["task_id"], user["id"], "redmine_sync", diff)
+        if not task:
+            continue
+        parent_rollups.add(task.get("parentTaskId"))
+        apply_redmine_ticket_to_task(db, user, task, ticket)
         synced.append(row["task_id"])
     refresh_parent_progress_rollups(db, [*parent_rollups, *synced])
     return {"syncedTaskIds": synced, "count": len(synced)}

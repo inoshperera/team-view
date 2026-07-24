@@ -63,7 +63,9 @@ const state = {
         viewingTaskId: null,
         editorTask: null,
         editorParentTaskId: null,
-        linkedTicket: null
+        linkedTicket: null,
+        syncingRedmine: false,
+        syncingTaskIds: new Set()
     },
     summaries: [],
     previousSummaries: [],
@@ -165,6 +167,7 @@ const els = {
     refreshButton: document.getElementById("refreshButton"),
     logoutButton: null,
     addPlannerTaskButton: document.getElementById("addPlannerTaskButton"),
+    syncRedmineButton: document.getElementById("syncRedmineButton"),
     plannerDrilldownButton: null,
     plannerUserChip: document.getElementById("plannerUserChip"),
     settingsButton: null,
@@ -524,6 +527,7 @@ function createTeamDraft(teams, openTeamId = "") {
 function bindEvents() {
     els.loginForm.addEventListener("submit", handleLoginSubmit);
     els.addPlannerTaskButton.addEventListener("click", () => openPlannerEditor(null));
+    els.syncRedmineButton.addEventListener("click", syncPlannerWithRedmine);
 
     els.refreshButton.addEventListener("click", refreshActiveView);
     els.directoryWarningPanel.addEventListener("click", handleDirectoryWarningClick);
@@ -758,6 +762,26 @@ async function refreshPlanner() {
         setRefreshState("failed", error.message || "Unable to load high-level tasks.");
     }
     render();
+}
+
+async function syncPlannerWithRedmine() {
+    if (state.planner.syncingRedmine) {
+        return;
+    }
+    state.planner.syncingRedmine = true;
+    setRefreshState("loading", "Syncing linked tasks from Redmine.");
+    renderPlannerRedmineSyncButton();
+    renderRefreshState();
+    try {
+        const result = await apiJson("/api/sync/redmine", { method: "POST" });
+        await refreshPlanner();
+        setRefreshState("success", `Redmine sync complete. ${Number(result.count || 0)} linked task${Number(result.count || 0) === 1 ? "" : "s"} refreshed.`);
+    } catch (error) {
+        setRefreshState("failed", error.message || "Unable to sync linked Redmine tasks.");
+    } finally {
+        state.planner.syncingRedmine = false;
+        render();
+    }
 }
 
 function syncPlannerControls() {
@@ -3056,6 +3080,8 @@ function renderViewShell() {
     els.workControls.classList.toggle("is-hidden", !isWork);
     els.plannerControls.classList.toggle("is-hidden", !isPlanner);
     els.addPlannerTaskButton.classList.toggle("is-hidden", !isPlanner);
+    els.syncRedmineButton.classList.toggle("is-hidden", !isPlanner || !["manager", "admin"].includes(state.auth.user?.role));
+    renderPlannerRedmineSyncButton();
 
     els.plannerUserChip.classList.toggle("is-hidden", !state.auth.user);
 
@@ -3080,6 +3106,7 @@ function renderRefreshState() {
     const isLoading = state.refresh.state === "loading";
     els.refreshButton.disabled = isLoading;
     els.refreshButton.classList.toggle("is-spinning", isLoading);
+    renderPlannerRedmineSyncButton();
     renderStaticHeader();
 
     if (!state.refresh.message || state.view === "settings") {
@@ -3103,6 +3130,17 @@ function renderRefreshState() {
                     : "success";
     els.notice.classList.remove("is-hidden");
     els.noticeBar.classList.remove("is-hidden");
+}
+
+function renderPlannerRedmineSyncButton() {
+    if (!els.syncRedmineButton) {
+        return;
+    }
+    const isSyncing = state.planner.syncingRedmine;
+    els.syncRedmineButton.disabled = isSyncing;
+    els.syncRedmineButton.innerHTML = isSyncing
+        ? `<span class="spinner spinner-button" aria-hidden="true"></span> Syncing`
+        : `<svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M16 8h5V3"/></svg> Sync Redmine`;
 }
 
 function renderCounts() {
@@ -3472,6 +3510,67 @@ function findPlannerTaskById(taskId) {
     return null;
 }
 
+function isPlannerTaskSyncing(taskId) {
+    return state.planner.syncingTaskIds.has(String(taskId));
+}
+
+function setPlannerTaskSyncing(taskId, syncing) {
+    const id = String(taskId || "");
+    if (!id) {
+        return;
+    }
+    if (syncing) {
+        state.planner.syncingTaskIds.add(id);
+    } else {
+        state.planner.syncingTaskIds.delete(id);
+    }
+}
+
+function upsertPlannerTaskInState(task) {
+    if (!task?.id) {
+        return;
+    }
+    const id = String(task.id);
+    const replaceInList = (tasks) => {
+        const index = tasks.findIndex((item) => String(item.id) === id);
+        if (index >= 0) {
+            tasks[index] = task;
+            return true;
+        }
+        return false;
+    };
+    replaceInList(state.planner.tasks);
+    state.planner.orgChildTasks.forEach((tasks) => replaceInList(tasks));
+}
+
+async function syncPlannerTaskFromRedmine(taskId, options = {}) {
+    const id = String(taskId || "");
+    if (!id || isPlannerTaskSyncing(id)) {
+        return findPlannerTaskById(id);
+    }
+    setPlannerTaskSyncing(id, true);
+    if (options.render !== false) {
+        renderPlanner();
+        if (String(state.planner.editorTask?.id || "") === id) {
+            renderPlannerSyncedPanel();
+        }
+        if (String(state.planner.viewingTaskId || "") === id) {
+            const task = findPlannerTaskById(id);
+            if (task) {
+                renderPlannerTaskView(task, options.auditRows || []);
+            }
+        }
+    }
+    try {
+        const payload = await apiJson(`/api/tasks/${encodeURIComponent(id)}/sync-redmine`, { method: "POST" });
+        const task = payload.task;
+        upsertPlannerTaskInState(task);
+        return task;
+    } finally {
+        setPlannerTaskSyncing(id, false);
+    }
+}
+
 async function toggleOrganizationTaskChildren(taskId) {
     const id = String(taskId);
     if (String(state.planner.expandedOrgTaskId || "") === id) {
@@ -3772,6 +3871,9 @@ async function openPlannerTaskView(taskId) {
     try {
         const payload = await apiJson(`/api/tasks/${encodeURIComponent(taskId)}/audit`);
         renderPlannerTaskView(payload.task, payload.audit || []);
+        if (payload.task?.redmineLinked) {
+            await refreshPlannerTaskViewLinkedTask(taskId, payload.audit || []);
+        }
     } catch (error) {
         els.plannerTaskViewBody.innerHTML = `<div class="period-error">${escapeHtml(error.message || "Unable to load task details.")}</div>`;
     }
@@ -3790,9 +3892,23 @@ function renderPlannerTaskView(task, auditRows) {
     const team = lookup(state.planner.teams, task.teamId);
     const due = dueLabel(task.dueDate);
     const teamName = teamDisplayName(team) || "Not set";
+    const syncing = isPlannerTaskSyncing(task.id);
     els.plannerTaskViewTitle.textContent = task.title;
     els.plannerTaskViewEyebrow.textContent = `Task #${task.id} · ${teamName}`;
     els.plannerTaskViewBody.innerHTML = `
+        ${task.redmineLinked ? `
+            <div class="task-view-redmine-panel">
+                <div>
+                    <strong>${escapeHtml(task.issueKey || `Issue ${task.redmineIssueId}`)}</strong>
+                    <span>Redmine-owned fields are refreshed from the linked ticket and its sub-tickets.</span>
+                </div>
+                <button type="button" class="synced-sync-btn" data-planner-view-sync="${escapeHtml(task.id)}" ${syncing ? "disabled" : ""}>
+                    ${syncing
+                        ? `<span class="spinner spinner-inline" aria-hidden="true"></span> Syncing`
+                        : `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M16 8h5V3"/></svg> Sync`}
+                </button>
+            </div>
+        ` : ""}
         <div class="task-view-summary">
             <div><span>Team</span><strong>${escapeHtml(teamName)}</strong></div>
             <div><span>Category</span><strong>${escapeHtml(category?.label || task.categoryId || "Not set")}</strong></div>
@@ -3816,6 +3932,39 @@ function renderPlannerTaskView(task, auditRows) {
             ${renderTaskAuditTable(auditRows)}
         </div>
     `;
+    els.plannerTaskViewBody.querySelector("[data-planner-view-sync]")?.addEventListener("click", () => {
+        refreshPlannerTaskViewLinkedTask(task.id, auditRows);
+    });
+}
+
+async function refreshPlannerTaskViewLinkedTask(taskId, auditRows = []) {
+    const currentTask = findPlannerTaskById(taskId);
+    setPlannerTaskSyncing(taskId, true);
+    if (currentTask && String(state.planner.viewingTaskId || "") === String(taskId)) {
+        renderPlannerTaskView(currentTask, auditRows);
+    }
+    try {
+        const payload = await apiJson(`/api/tasks/${encodeURIComponent(taskId)}/sync-redmine`, { method: "POST" });
+        upsertPlannerTaskInState(payload.task);
+        const nextPayload = await apiJson(`/api/tasks/${encodeURIComponent(taskId)}/audit`);
+        if (String(state.planner.viewingTaskId || "") === String(taskId)) {
+            setPlannerTaskSyncing(taskId, false);
+            renderPlannerTaskView(nextPayload.task, nextPayload.audit || []);
+        }
+    } catch (error) {
+        if (String(state.planner.viewingTaskId || "") === String(taskId)) {
+            const fallback = findPlannerTaskById(taskId) || currentTask;
+            setPlannerTaskSyncing(taskId, false);
+            if (fallback) {
+                renderPlannerTaskView(fallback, auditRows);
+                els.plannerTaskViewBody.insertAdjacentHTML("afterbegin", `<div class="period-error">${escapeHtml(error.message || "Unable to sync the linked Redmine ticket.")}</div>`);
+            } else {
+                els.plannerTaskViewBody.innerHTML = `<div class="period-error">${escapeHtml(error.message || "Unable to sync the linked Redmine ticket.")}</div>`;
+            }
+        }
+    } finally {
+        setPlannerTaskSyncing(taskId, false);
+    }
 }
 
 function renderTaskAuditTable(auditRows) {
@@ -4360,7 +4509,11 @@ async function openPlannerEditor(task, options = {}) {
     renderPlannerMemberPicker(task?.memberIds || []);
     els.plannerTaskError.classList.add("is-hidden");
     els.plannerTaskModal.classList.remove("is-hidden");
-    await loadPlannerTicketOptions();
+    if (task?.redmineLinked) {
+        await refreshOpenPlannerEditorLinkedTask(task.id);
+    } else {
+        await loadPlannerTicketOptions();
+    }
 }
 
 function closePlannerEditor() {
@@ -4490,6 +4643,52 @@ function renderPlannerMemberPicker(selectedIds = []) {
         `).join("") || `<div class="empty-mini">No members in this team.</div>`;
 }
 
+function applySyncedTaskToPlannerEditor(task) {
+    if (!task || String(state.planner.editorTask?.id || "") !== String(task.id)) {
+        return;
+    }
+    state.planner.editorTask = { ...task };
+    state.planner.linkedTicket = { ...task, memberIds: task.memberIds || [] };
+    els.plannerTaskStatus.value = task.statusId || "working";
+    setPlannerChoiceValue("priority", task.priorityId || els.plannerTaskPriority.value);
+    els.plannerTaskProgress.value = clampProgress(task.progress);
+    els.plannerTaskStart.value = task.startDate || "";
+    els.plannerTaskDue.value = task.dueDate || "";
+    els.plannerTaskRedmineSearch.value = task.issueKey || task.redmineIssueId || "";
+    updatePlannerDueRequirement();
+    renderPlannerSyncedPanel();
+    renderPlannerMemberPicker(task.memberIds || []);
+}
+
+async function refreshOpenPlannerEditorLinkedTask(taskId, options = {}) {
+    if (!state.planner.editorTask || String(state.planner.editorTask.id) !== String(taskId)) {
+        return null;
+    }
+    setPlannerTaskSyncing(taskId, true);
+    renderPlannerSyncedPanel();
+    renderPlannerMemberPicker(state.planner.linkedTicket?.memberIds || state.planner.editorTask.memberIds || []);
+    try {
+        const payload = await apiJson(`/api/tasks/${encodeURIComponent(taskId)}/sync-redmine`, { method: "POST" });
+        const task = payload.task;
+        upsertPlannerTaskInState(task);
+        applySyncedTaskToPlannerEditor(task);
+        if (!options.quiet) {
+            els.plannerTaskError.classList.add("is-hidden");
+        }
+        return task;
+    } catch (error) {
+        if (!options.quiet) {
+            els.plannerTaskError.textContent = error.message || "Unable to sync the linked Redmine ticket.";
+            els.plannerTaskError.classList.remove("is-hidden");
+        }
+        return null;
+    } finally {
+        setPlannerTaskSyncing(taskId, false);
+        renderPlannerSyncedPanel();
+        renderPlannerMemberPicker(state.planner.linkedTicket?.memberIds || state.planner.editorTask?.memberIds || []);
+    }
+}
+
 function selectedPlannerMemberIds() {
     const syncedIds = state.planner.linkedTicket?.memberIds || state.planner.linkedTicket?.assigneeIds;
     if (state.planner.linkedTicket) {
@@ -4507,6 +4706,7 @@ function teamNamesForPlannerUser(user) {
 function renderPlannerSyncedPanel() {
     const ticket = state.planner.linkedTicket;
     const synced = !!ticket;
+    const syncing = synced && isPlannerTaskSyncing(state.planner.editorTask?.id || ticket.id);
 
     els.plannerSyncedPanel.classList.toggle("is-hidden", !synced);
     document.querySelectorAll(".synced-hideable").forEach((el) => el.classList.toggle("is-hidden", synced));
@@ -4533,10 +4733,17 @@ function renderPlannerSyncedPanel() {
                 <strong class="synced-panel-title">SYNCED FIELDS</strong>
                 <p class="synced-panel-desc">Priority, status, progress, dates and assignees are kept in sync with <strong>${escapeHtml(ticket.issueKey || String(ticket.redmineIssueId))}</strong> and its sub-tickets by the backend. Update them in Redmine to change them here.</p>
             </div>
-            <button type="button" class="synced-unlink-btn" id="unlinkPlannerTicketButton">
-                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                Unlink
-            </button>
+            <div class="synced-panel-actions">
+                <button type="button" class="synced-sync-btn" id="syncPlannerTicketButton" ${syncing ? "disabled" : ""}>
+                    ${syncing
+                        ? `<span class="spinner spinner-inline" aria-hidden="true"></span> Syncing`
+                        : `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M16 8h5V3"/></svg> Sync`}
+                </button>
+                <button type="button" class="synced-unlink-btn" id="unlinkPlannerTicketButton" ${syncing ? "disabled" : ""}>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    Unlink
+                </button>
+            </div>
         </div>
         <div class="synced-fields-grid">
             <div class="synced-field-box">
@@ -4564,6 +4771,12 @@ function renderPlannerSyncedPanel() {
             </div>
         </div>
     `;
+    els.plannerSyncedPanel.querySelector("#syncPlannerTicketButton").addEventListener("click", () => {
+        const taskId = state.planner.editorTask?.id;
+        if (taskId) {
+            refreshOpenPlannerEditorLinkedTask(taskId);
+        }
+    });
     els.plannerSyncedPanel.querySelector("#unlinkPlannerTicketButton").addEventListener("click", () => clearPlannerLinkedTicket());
 }
 
