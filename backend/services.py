@@ -905,6 +905,47 @@ def ensure_planner_schema(db):
         db.execute("ALTER TABLE tasks ADD KEY idx_tasks_parent (parent_task_id)")
         db.execute("ALTER TABLE tasks ADD CONSTRAINT fk_tasks_parent FOREIGN KEY (parent_task_id) REFERENCES tasks(id) ON DELETE SET NULL")
 
+    ticket_columns = {
+        row["COLUMN_NAME"]
+        for row in db.query(
+            """
+            SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='redmine_tickets'
+            """
+        )
+    }
+    if "link_type" not in ticket_columns:
+        db.execute("ALTER TABLE redmine_tickets ADD COLUMN link_type ENUM('issue','version') NOT NULL DEFAULT 'issue' AFTER id")
+    if "redmine_version_id" not in ticket_columns:
+        db.execute("ALTER TABLE redmine_tickets ADD COLUMN redmine_version_id INT NULL AFTER redmine_issue_id")
+    ticket_indexes = {
+        row["INDEX_NAME"]
+        for row in db.query(
+            """
+            SELECT INDEX_NAME
+            FROM INFORMATION_SCHEMA.STATISTICS
+            WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='redmine_tickets'
+            """
+        )
+    }
+    if "uq_rt_version" not in ticket_indexes:
+        db.execute("ALTER TABLE redmine_tickets ADD UNIQUE KEY uq_rt_version (redmine_version_id)")
+    if "idx_rt_link_type" not in ticket_indexes:
+        db.execute("ALTER TABLE redmine_tickets ADD KEY idx_rt_link_type (link_type)")
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS redmine_version_tickets (
+          version_ticket_id BIGINT UNSIGNED NOT NULL,
+          ticket_id BIGINT UNSIGNED NOT NULL,
+          PRIMARY KEY (version_ticket_id, ticket_id),
+          KEY idx_rvt_ticket (ticket_id),
+          CONSTRAINT fk_rvt_version FOREIGN KEY (version_ticket_id) REFERENCES redmine_tickets(id) ON DELETE CASCADE,
+          CONSTRAINT fk_rvt_ticket FOREIGN KEY (ticket_id) REFERENCES redmine_tickets(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
+    )
+
     db.execute("UPDATE teams SET color=COALESCE(color, '#818cf8')")
 
 
@@ -1421,7 +1462,13 @@ def parse_issue_id(value):
     return int(match.group(1)) if match else None
 
 
-def normalize_redmine_issue(db, issue):
+def parse_version_id(value):
+    text = str(value or "").strip()
+    match = re.search(r"(?:versions/|version:|v:)(\d+)", text, re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def normalize_redmine_issue(db, issue, redmine=None, api_key=None):
     project = issue.get("project") or {}
     project_id = ensure_project(db, project)
     status_id = map_status(issue.get("status", {}).get("name"))
@@ -1431,9 +1478,10 @@ def normalize_redmine_issue(db, issue):
     db.execute(
         """
         INSERT INTO redmine_tickets
-          (redmine_issue_id, issue_key, project_id, title, status_id, priority_id, progress, start_date, due_date, estimated_hours, logged_hours, last_synced_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,UTC_TIMESTAMP())
+          (link_type, redmine_issue_id, redmine_version_id, issue_key, project_id, title, status_id, priority_id, progress, start_date, due_date, estimated_hours, logged_hours, last_synced_at)
+        VALUES ('issue',%s,NULL,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,UTC_TIMESTAMP())
         ON DUPLICATE KEY UPDATE
+          link_type='issue', redmine_version_id=NULL,
           issue_key=VALUES(issue_key), project_id=VALUES(project_id), title=VALUES(title),
           status_id=VALUES(status_id), priority_id=VALUES(priority_id), progress=VALUES(progress),
           start_date=VALUES(start_date), due_date=VALUES(due_date),
@@ -1458,7 +1506,11 @@ def normalize_redmine_issue(db, issue):
     for child in issue.get("children") or []:
         if not child.get("id"):
             continue
-        child_ticket = normalize_redmine_issue(db, child)
+        child_issue = child
+        if redmine is not None:
+            payload = redmine.get(f"/issues/{int(child['id'])}.json", api_key, {"include": "children"})
+            child_issue = payload.get("issue") or child
+        child_ticket = normalize_redmine_issue(db, child_issue, redmine, api_key)
         db.execute(
             "UPDATE redmine_tickets SET parent_ticket_id=%s WHERE id=%s",
             (ticket["id"], child_ticket["id"]),
@@ -1513,6 +1565,130 @@ def replace_ticket_assignees(db, ticket_id, issue):
         db.execute("INSERT IGNORE INTO redmine_ticket_assignees (ticket_id,user_id) VALUES (%s,%s)", (ticket_id, user["id"]))
 
 
+def ticket_subtree_ticket_ids(db, ticket_id):
+    rows = db.query(
+        """
+        SELECT rt.id
+        FROM redmine_tickets root
+        JOIN redmine_tickets rt ON rt.id=root.id OR rt.parent_ticket_id=root.id
+        WHERE root.id=%s
+        """,
+        (ticket_id,),
+    )
+    return [row["id"] for row in rows]
+
+
+def fetch_redmine_version_issues(redmine, api_key, version_id):
+    issues = []
+    offset = 0
+    limit = 100
+    while True:
+        payload = redmine.get(
+            "/issues.json",
+            api_key,
+            {"fixed_version_id": int(version_id), "status_id": "*", "limit": limit, "offset": offset},
+        )
+        batch = payload.get("issues", [])
+        issues.extend(batch)
+        total = int(payload.get("total_count") or len(issues))
+        offset += limit
+        if offset >= total or not batch:
+            break
+    return issues
+
+
+def aggregate_version_status(status_ids):
+    statuses = [str(status or "working") for status in status_ids]
+    if not statuses:
+        return "new"
+    if any(status == "working" for status in statuses):
+        return "working"
+    if all(status == "done" for status in statuses):
+        return "done"
+    if all(status == "new" for status in statuses):
+        return "new"
+    return "working"
+
+
+def normalize_redmine_version(db, redmine, api_key, version_id):
+    version_id = int(version_id)
+    version_payload = redmine.get(f"/versions/{version_id}.json", api_key)
+    version = version_payload.get("version") or {}
+    issues = fetch_redmine_version_issues(redmine, api_key, version_id)
+    ticket_ids = []
+    project_id = ensure_project(db, version.get("project") or (issues[0].get("project") if issues else {}))
+    for issue in issues:
+        issue_id = issue.get("id")
+        if issue_id:
+            detail = redmine.get(f"/issues/{int(issue_id)}.json", api_key, {"include": "children"})
+            issue = detail.get("issue") or issue
+        ticket = normalize_redmine_issue(db, issue, redmine, api_key)
+        ticket_ids.extend(ticket_subtree_ticket_ids(db, ticket["id"]))
+        project_id = ticket.get("projectId") or project_id
+
+    unique_ticket_ids = sorted({int(ticket_id) for ticket_id in ticket_ids})
+    aggregate = version_ticket_aggregate(db, unique_ticket_ids)
+    title = version.get("name") or f"Version {version_id}"
+    issue_key = f"VERSION-{version_id}"
+    db.execute(
+        """
+        INSERT INTO redmine_tickets
+          (link_type, redmine_issue_id, redmine_version_id, issue_key, project_id, title, status_id, priority_id, progress, start_date, due_date, last_synced_at)
+        VALUES ('version',%s,%s,%s,%s,%s,%s,'medium',%s,%s,%s,UTC_TIMESTAMP())
+        ON DUPLICATE KEY UPDATE
+          link_type='version', redmine_version_id=VALUES(redmine_version_id), issue_key=VALUES(issue_key),
+          project_id=VALUES(project_id), title=VALUES(title), status_id=VALUES(status_id),
+          progress=VALUES(progress), start_date=VALUES(start_date), due_date=VALUES(due_date),
+          last_synced_at=UTC_TIMESTAMP()
+        """,
+        (
+            -version_id,
+            version_id,
+            issue_key,
+            project_id,
+            title,
+            aggregate["statusId"],
+            aggregate["progress"],
+            aggregate["startDate"] or None,
+            aggregate["dueDate"] or version.get("due_date") or None,
+        ),
+    )
+    version_ticket = db.one("SELECT * FROM redmine_tickets WHERE redmine_version_id=%s", (version_id,))
+    db.execute("DELETE FROM redmine_version_tickets WHERE version_ticket_id=%s", (version_ticket["id"],))
+    for ticket_id in unique_ticket_ids:
+        if ticket_id != version_ticket["id"]:
+            db.execute(
+                "INSERT IGNORE INTO redmine_version_tickets (version_ticket_id,ticket_id) VALUES (%s,%s)",
+                (version_ticket["id"], ticket_id),
+            )
+    return ticket_payload(db, version_ticket)
+
+
+def version_ticket_aggregate(db, ticket_ids):
+    if not ticket_ids:
+        return {"statusId": "new", "progress": 0, "startDate": None, "dueDate": None}
+    placeholders = ",".join(["%s"] * len(ticket_ids))
+    rows = db.query(
+        f"""
+        SELECT status_id, progress, start_date, due_date
+        FROM redmine_tickets
+        WHERE id IN ({placeholders}) AND link_type='issue'
+        """,
+        ticket_ids,
+    )
+    if not rows:
+        return {"statusId": "new", "progress": 0, "startDate": None, "dueDate": None}
+    progresses = [int(row.get("progress") or 0) for row in rows]
+    start_dates = [row.get("start_date") for row in rows if row.get("start_date")]
+    due_dates = [row.get("due_date") for row in rows if row.get("due_date")]
+    return {
+        "statusId": aggregate_version_status([row.get("status_id") for row in rows]),
+        "progress": int(round(sum(progresses) / len(progresses))),
+        "startDate": min(start_dates) if start_dates else None,
+        "dueDate": max(due_dates) if due_dates else None,
+    }
+
+
 def map_status(name):
     value = str(name or "").strip().lower()
     if value == "new":
@@ -1546,31 +1722,43 @@ def list_redmine_recent_tickets(db, redmine, api_key, project_id=None, query="")
         if project and project.get("redmine_identifier"):
             params["project_id"] = project["redmine_identifier"]
     if query.strip():
+        version_id = parse_version_id(query)
+        if version_id:
+            return [normalize_redmine_version(db, redmine, api_key, version_id)]
         issue_id = parse_issue_id(query)
         if issue_id:
             issue = redmine.get(f"/issues/{issue_id}.json", api_key, {"include": "children"})
-            return [normalize_redmine_issue(db, issue.get("issue") or {})]
+            return [normalize_redmine_issue(db, issue.get("issue") or {}, redmine, api_key)]
         params["subject"] = f"~{query.strip()}"
     payload = redmine.get("/issues.json", api_key, params)
     return [normalize_redmine_issue(db, issue) for issue in payload.get("issues", [])]
 
 
 def get_or_fetch_ticket(db, redmine, api_key, value):
+    version_id = parse_version_id(value)
+    if version_id:
+        return normalize_redmine_version(db, redmine, api_key, version_id)
     issue_id = parse_issue_id(value)
     if not issue_id:
         return None
-    cached = db.one("SELECT * FROM redmine_tickets WHERE redmine_issue_id=%s", (issue_id,))
-    if cached:
-        return ticket_payload(db, cached)
     payload = redmine.get(f"/issues/{issue_id}.json", api_key, {"include": "children"})
     issue = payload.get("issue") or {}
-    return normalize_redmine_issue(db, issue) if issue else None
+    return normalize_redmine_issue(db, issue, redmine, api_key) if issue else None
 
 
 def refresh_ticket(db, redmine, api_key, redmine_issue_id):
     payload = redmine.get(f"/issues/{int(redmine_issue_id)}.json", api_key, {"include": "children"})
     issue = payload.get("issue") or {}
-    return normalize_redmine_issue(db, issue) if issue else None
+    return normalize_redmine_issue(db, issue, redmine, api_key) if issue else None
+
+
+def refresh_redmine_link(db, redmine, api_key, task):
+    if task.get("redmineLinkType") == "version":
+        version_id = task.get("redmineVersionId")
+        if not version_id:
+            raise ValueError("This task is missing the linked Redmine version id.")
+        return normalize_redmine_version(db, redmine, api_key, version_id)
+    return refresh_ticket(db, redmine, api_key, task["redmineIssueId"])
 
 
 def ticket_payload(db, ticket):
@@ -1584,7 +1772,9 @@ def ticket_payload(db, ticket):
     )
     return {
         "id": ticket["id"],
+        "redmineLinkType": ticket.get("link_type") or "issue",
         "redmineIssueId": ticket["redmine_issue_id"],
+        "redmineVersionId": ticket.get("redmine_version_id"),
         "issueKey": ticket["issue_key"],
         "title": ticket["title"],
         "projectId": ticket["project_id"],
@@ -1596,8 +1786,24 @@ def ticket_payload(db, ticket):
         "dueDate": date_value(ticket.get("due_date")),
         "estimatedHours": float(ticket["estimated_hours"]) if ticket.get("estimated_hours") is not None else None,
         "loggedHours": float(ticket["logged_hours"]) if ticket.get("logged_hours") is not None else None,
-        "assigneeIds": [user["id"] for user in assignees],
+        "assigneeIds": redmine_link_assignee_ids(db, ticket) or [user["id"] for user in assignees],
     }
+
+
+def redmine_link_assignee_ids(db, ticket):
+    if ticket.get("link_type") == "version":
+        rows = db.query(
+            """
+            SELECT DISTINCT rta.user_id
+            FROM redmine_version_tickets rvt
+            JOIN redmine_ticket_assignees rta ON rta.ticket_id=rvt.ticket_id
+            WHERE rvt.version_ticket_id=%s
+            ORDER BY rta.user_id
+            """,
+            (ticket["id"],),
+        )
+        return [row["user_id"] for row in rows]
+    return ticket_subtree_assignee_ids(db, ticket["id"])
 
 
 def ticket_subtree_assignee_ids(db, ticket_id):
@@ -1655,7 +1861,7 @@ def list_tasks(db, user, filters):
         args.extend([q, q])
     rows = db.query(
         f"""
-        SELECT t.*, p.name AS project_name, p.redmine_identifier, rt.redmine_issue_id, rt.issue_key
+        SELECT t.*, p.name AS project_name, p.redmine_identifier, rt.link_type, rt.redmine_issue_id, rt.redmine_version_id, rt.issue_key
         FROM tasks t
         LEFT JOIN projects p ON p.id=t.project_id
         LEFT JOIN redmine_tickets rt ON rt.id=t.redmine_ticket_id
@@ -1674,7 +1880,7 @@ def truthy(value):
 def get_task(db, task_id):
     row = db.one(
         """
-        SELECT t.*, p.name AS project_name, p.redmine_identifier, rt.redmine_issue_id, rt.issue_key
+        SELECT t.*, p.name AS project_name, p.redmine_identifier, rt.link_type, rt.redmine_issue_id, rt.redmine_version_id, rt.issue_key
         FROM tasks t
         LEFT JOIN projects p ON p.id=t.project_id
         LEFT JOIN redmine_tickets rt ON rt.id=t.redmine_ticket_id
@@ -1709,7 +1915,9 @@ def task_payload(db, row):
         "startDate": date_value(row.get("start_date")),
         "dueDate": date_value(row.get("due_date")),
         "redmineTicketId": row.get("redmine_ticket_id"),
+        "redmineLinkType": row.get("link_type") or "issue",
         "redmineIssueId": row.get("redmine_issue_id"),
+        "redmineVersionId": row.get("redmine_version_id"),
         "issueKey": row.get("issue_key") or "",
         "redmineLinked": bool(row.get("redmine_ticket_id")),
         "memberIds": [user["id"] for user in assignments],
@@ -1802,6 +2010,8 @@ def _synced_fields_changed(existing, payload):
         "memberIds": "memberIds",
     }
     for payload_key, existing_key in field_map.items():
+        if payload_key == "priorityId" and existing.get("redmineLinkType") == "version":
+            continue
         if payload_key not in payload:
             continue
         incoming = payload[payload_key]
@@ -1989,15 +2199,16 @@ def link_task_to_ticket(db, redmine, api_key, user, task_id, value):
     ticket = get_or_fetch_ticket(db, redmine, api_key, value)
     if not ticket:
         raise ValueError("Could not identify a Redmine issue from that value.")
+    priority_id = task["priorityId"] if ticket.get("redmineLinkType") == "version" else ticket["priorityId"]
     db.execute(
         """
         UPDATE tasks SET redmine_ticket_id=%s,status_id=%s,priority_id=%s,progress=%s,start_date=%s,due_date=%s,last_redmine_sync_at=UTC_TIMESTAMP()
         WHERE id=%s
         """,
-        (ticket["id"], ticket["statusId"], ticket["priorityId"], ticket["progress"], ticket["startDate"] or None, ticket["dueDate"] or None, task_id),
+        (ticket["id"], ticket["statusId"], priority_id, ticket["progress"], ticket["startDate"] or None, ticket["dueDate"] or None, task_id),
     )
     db.execute("DELETE FROM task_assignments WHERE task_id=%s", (task_id,))
-    for member_id in ticket_subtree_assignee_ids(db, ticket["id"]) or ticket["assigneeIds"]:
+    for member_id in ticket["assigneeIds"]:
         db.execute("INSERT IGNORE INTO task_assignments (task_id,user_id,source) VALUES (%s,%s,'redmine')", (task_id, member_id))
     refresh_parent_progress_rollup(db, task_id)
     refresh_parent_progress_rollup(db, task["parentTaskId"])
@@ -2025,16 +2236,21 @@ def unlink_task(db, user, task_id):
 
 
 def apply_redmine_ticket_to_task(db, user, task, ticket, audit_action="redmine_sync"):
+    priority_sql = "" if ticket.get("redmineLinkType") == "version" else "priority_id=%s,"
+    args = [ticket["statusId"]]
+    if ticket.get("redmineLinkType") != "version":
+        args.append(ticket["priorityId"])
+    args.extend([ticket["progress"], ticket["startDate"] or None, ticket["dueDate"] or None, task["id"]])
     db.execute(
-        """
+        f"""
         UPDATE tasks
-        SET status_id=%s, priority_id=%s, progress=%s, start_date=%s, due_date=%s, last_redmine_sync_at=UTC_TIMESTAMP()
+        SET status_id=%s, {priority_sql} progress=%s, start_date=%s, due_date=%s, last_redmine_sync_at=UTC_TIMESTAMP()
         WHERE id=%s
         """,
-        (ticket["statusId"], ticket["priorityId"], ticket["progress"], ticket["startDate"] or None, ticket["dueDate"] or None, task["id"]),
+        args,
     )
     db.execute("DELETE FROM task_assignments WHERE task_id=%s", (task["id"],))
-    for member_id in ticket_subtree_assignee_ids(db, ticket["id"]) or ticket["assigneeIds"]:
+    for member_id in ticket["assigneeIds"]:
         db.execute(
             "INSERT IGNORE INTO task_assignments (task_id,user_id,source) VALUES (%s,%s,'redmine')",
             (task["id"], member_id),
@@ -2055,9 +2271,11 @@ def sync_linked_task(db, redmine, api_key, user, task_id):
         raise KeyError("Task not found.")
     if not can_mutate_team(db, user, task["teamId"]):
         raise PermissionError("You do not have access to this team.")
-    if not task.get("redmineLinked") or not task.get("redmineIssueId"):
+    if not task.get("redmineLinked"):
+        raise ValueError("This task is not linked to Redmine.")
+    if task.get("redmineLinkType") != "version" and not task.get("redmineIssueId"):
         raise ValueError("This task is not linked to a Redmine ticket.")
-    ticket = refresh_ticket(db, redmine, api_key, task["redmineIssueId"])
+    ticket = refresh_redmine_link(db, redmine, api_key, task)
     if not ticket:
         raise ValueError("Unable to refresh the linked Redmine ticket.")
     return apply_redmine_ticket_to_task(db, user, task, ticket)
@@ -2069,7 +2287,7 @@ def sync_linked_tasks(db, redmine, api_key, user):
 
     rows = db.query(
         """
-        SELECT t.id AS task_id, rt.redmine_issue_id
+        SELECT t.id AS task_id, rt.link_type, rt.redmine_issue_id, rt.redmine_version_id
         FROM tasks t JOIN redmine_tickets rt ON rt.id=t.redmine_ticket_id
         WHERE t.deleted_at IS NULL AND t.redmine_ticket_id IS NOT NULL
         ORDER BY t.last_redmine_sync_at IS NULL DESC, t.last_redmine_sync_at
@@ -2078,11 +2296,11 @@ def sync_linked_tasks(db, redmine, api_key, user):
     synced = []
     parent_rollups = set()
     for row in rows:
-        ticket = refresh_ticket(db, redmine, api_key, row["redmine_issue_id"])
-        if not ticket:
-            continue
         task = get_task(db, row["task_id"])
         if not task:
+            continue
+        ticket = refresh_redmine_link(db, redmine, api_key, task)
+        if not ticket:
             continue
         parent_rollups.add(task.get("parentTaskId"))
         apply_redmine_ticket_to_task(db, user, task, ticket)

@@ -125,7 +125,9 @@ CREATE TABLE IF NOT EXISTS projects (
 
 CREATE TABLE IF NOT EXISTS redmine_tickets (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  link_type ENUM('issue','version') NOT NULL DEFAULT 'issue',
   redmine_issue_id INT NOT NULL,
+  redmine_version_id INT NULL,
   issue_key VARCHAR(64) NOT NULL,
   project_id BIGINT UNSIGNED NOT NULL,
   parent_ticket_id BIGINT UNSIGNED NULL,
@@ -140,14 +142,25 @@ CREATE TABLE IF NOT EXISTS redmine_tickets (
   last_synced_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uq_rt_issue (redmine_issue_id),
+  UNIQUE KEY uq_rt_version (redmine_version_id),
   KEY idx_rt_project (project_id),
   KEY idx_rt_parent (parent_ticket_id),
+  KEY idx_rt_link_type (link_type),
   KEY idx_rt_key (issue_key),
   CONSTRAINT chk_rt_progress CHECK (progress BETWEEN 0 AND 100),
   CONSTRAINT fk_rt_project FOREIGN KEY (project_id) REFERENCES projects(id),
   CONSTRAINT fk_rt_parent FOREIGN KEY (parent_ticket_id) REFERENCES redmine_tickets(id) ON DELETE SET NULL,
   CONSTRAINT fk_rt_status FOREIGN KEY (status_id) REFERENCES statuses(id),
   CONSTRAINT fk_rt_priority FOREIGN KEY (priority_id) REFERENCES priorities(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS redmine_version_tickets (
+  version_ticket_id BIGINT UNSIGNED NOT NULL,
+  ticket_id BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (version_ticket_id, ticket_id),
+  KEY idx_rvt_ticket (ticket_id),
+  CONSTRAINT fk_rvt_version FOREIGN KEY (version_ticket_id) REFERENCES redmine_tickets(id) ON DELETE CASCADE,
+  CONSTRAINT fk_rvt_ticket FOREIGN KEY (ticket_id) REFERENCES redmine_tickets(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS redmine_ticket_assignees (

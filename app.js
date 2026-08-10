@@ -3947,21 +3947,22 @@ function renderPlannerTaskView(task, auditRows) {
     const due = dueLabel(task.dueDate);
     const teamName = teamDisplayName(team) || "Not set";
     const syncing = isPlannerTaskSyncing(task.id);
-    const issueUrl = task.redmineIssueId ? buildIssueUrl(task.redmineIssueId) : "";
+    const issueUrl = buildRedmineLinkUrl(task);
+    const redmineLabel = task.redmineLinkType === "version" ? "version" : "ticket";
     els.plannerTaskViewTitle.textContent = task.title;
     els.plannerTaskViewEyebrow.textContent = `Task #${task.id} · ${teamName}`;
     els.plannerTaskViewBody.innerHTML = `
         ${task.redmineLinked ? `
             <div class="task-view-redmine-panel">
                 <div>
-                    <strong>${escapeHtml(task.issueKey || `Issue ${task.redmineIssueId}`)}</strong>
-                    <span>Redmine-owned fields are refreshed from the linked ticket and its sub-tickets.</span>
+                    <strong>${escapeHtml(task.issueKey || (task.redmineLinkType === "version" ? `Version ${task.redmineVersionId}` : `Issue ${task.redmineIssueId}`))}</strong>
+                    <span>Redmine-owned fields are refreshed from the linked ${redmineLabel}${task.redmineLinkType === "version" ? " and its tickets" : " and its sub-tickets"}.</span>
                 </div>
                 <div class="synced-panel-actions">
                     ${issueUrl ? `
                         <a class="synced-open-link" href="${escapeHtml(issueUrl)}" target="_blank" rel="noopener noreferrer">
                             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
-                            Open ticket
+                            Open ${redmineLabel}
                         </a>
                     ` : ""}
                     <button type="button" class="synced-sync-btn" data-planner-view-sync="${escapeHtml(task.id)}" ${syncing ? "disabled" : ""}>
@@ -4353,6 +4354,15 @@ function buildIssueUrl(issueId) {
         return `#issue-${issueId}`;
     }
     return `${state.config.redmineUrl}/issues/${issueId}`;
+}
+
+function buildRedmineLinkUrl(ticket) {
+    if (ticket?.redmineLinkType === "version" && ticket.redmineVersionId) {
+        return state.config.redmineUrl
+            ? `${state.config.redmineUrl}/versions/${ticket.redmineVersionId}`
+            : `#version-${ticket.redmineVersionId}`;
+    }
+    return ticket?.redmineIssueId ? buildIssueUrl(ticket.redmineIssueId) : "";
 }
 
 function priorityClassName(priority) {
@@ -4769,12 +4779,17 @@ function teamNamesForPlannerUser(user) {
 function renderPlannerSyncedPanel() {
     const ticket = state.planner.linkedTicket;
     const synced = !!ticket;
+    const isVersion = ticket?.redmineLinkType === "version";
     const syncing = synced && isPlannerTaskSyncing(state.planner.editorTask?.id || ticket.id);
 
     els.plannerSyncedPanel.classList.toggle("is-hidden", !synced);
-    document.querySelectorAll(".synced-hideable").forEach((el) => el.classList.toggle("is-hidden", synced));
+    document.querySelectorAll(".synced-hideable").forEach((el) => {
+        const staysEditable = isVersion && el.id === "priorityFieldWrap";
+        el.classList.toggle("is-hidden", synced && !staysEditable);
+    });
     document.querySelectorAll(".synced-hideable input, .synced-hideable select, .synced-hideable textarea, .synced-hideable button").forEach((control) => {
-        control.disabled = synced;
+        const staysEditable = isVersion && control.closest("#priorityFieldWrap");
+        control.disabled = synced && !staysEditable;
     });
     updatePlannerDueRequirement();
     const membersBadge = document.getElementById("membersSyncedBadge");
@@ -4787,7 +4802,9 @@ function renderPlannerSyncedPanel() {
     const startVal = ticket.startDate || "Not set";
     const dueVal = ticket.dueDate || "Not set";
     const progressVal = ticket.progress ?? els.plannerTaskProgress.value ?? 0;
-    const issueUrl = ticket.redmineIssueId ? buildIssueUrl(ticket.redmineIssueId) : "";
+    const issueUrl = buildRedmineLinkUrl(ticket);
+    const redmineLabel = isVersion ? "version" : "ticket";
+    const displayKey = ticket.issueKey || (isVersion ? `Version ${ticket.redmineVersionId}` : String(ticket.redmineIssueId));
 
     const syncedIcon = `<svg class="synced-icon" xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> Synced from Redmine`;
 
@@ -4795,13 +4812,13 @@ function renderPlannerSyncedPanel() {
         <div class="synced-panel-head">
             <div>
                 <strong class="synced-panel-title">SYNCED FIELDS</strong>
-                <p class="synced-panel-desc">Priority, status, progress, dates and assignees are kept in sync with <strong>${escapeHtml(ticket.issueKey || String(ticket.redmineIssueId))}</strong> and its sub-tickets by the backend. Update them in Redmine to change them here.</p>
+                <p class="synced-panel-desc">${isVersion ? "Status, progress, dates and assignees are" : "Priority, status, progress, dates and assignees are"} kept in sync with <strong>${escapeHtml(displayKey)}</strong>${isVersion ? " and its version tickets" : " and its sub-tickets"} by the backend. ${isVersion ? "Priority stays editable here." : "Update them in Redmine to change them here."}</p>
             </div>
             <div class="synced-panel-actions">
                 ${issueUrl ? `
                     <a class="synced-open-link" href="${escapeHtml(issueUrl)}" target="_blank" rel="noopener noreferrer">
                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
-                        Open ticket
+                        Open ${redmineLabel}
                     </a>
                 ` : ""}
                 <button type="button" class="synced-sync-btn" id="syncPlannerTicketButton" ${syncing ? "disabled" : ""}>
@@ -4820,10 +4837,10 @@ function renderPlannerSyncedPanel() {
                 <div class="synced-field-label"><span>Status</span><span class="synced-badge">${syncedIcon}</span></div>
                 <div class="synced-field-value">${escapeHtml(statusLabel)}</div>
             </div>
-            <div class="synced-field-box">
+            ${isVersion ? "" : `<div class="synced-field-box">
                 <div class="synced-field-label"><span>Priority</span><span class="synced-badge">${syncedIcon}</span></div>
                 <div class="synced-field-value">${escapeHtml(priorityLabel)}</div>
-            </div>
+            </div>`}
             <div class="synced-field-box">
                 <div class="synced-field-label"><span>Progress</span><span class="synced-badge">${syncedIcon}</span></div>
                 <div class="synced-field-value synced-progress-wrap">
@@ -4892,8 +4909,14 @@ async function loadPlannerTicketOptions() {
     }
     try {
         const payload = await apiJson(`/api/redmine/recent-tickets?projectId=${encodeURIComponent(projectId)}&q=${encodeURIComponent(query)}`);
-        els.plannerTicketOptions.innerHTML = (payload.tickets || []).map((ticket) => `<option value="${escapeHtml(ticket.issueKey || ticket.redmineIssueId)}">${escapeHtml(ticket.title)}</option>`).join("");
-        const exact = (payload.tickets || []).find((ticket) => String(ticket.issueKey) === query || String(ticket.redmineIssueId) === query || query.includes(`/issues/${ticket.redmineIssueId}`));
+        els.plannerTicketOptions.innerHTML = (payload.tickets || []).map((ticket) => `<option value="${escapeHtml(ticket.issueKey || ticket.redmineIssueId || ticket.redmineVersionId)}">${escapeHtml(ticket.title)}</option>`).join("");
+        const exact = (payload.tickets || []).find((ticket) => {
+            if (String(ticket.issueKey) === query || String(ticket.redmineIssueId) === query || query.includes(`/issues/${ticket.redmineIssueId}`)) {
+                return true;
+            }
+            return ticket.redmineLinkType === "version"
+                && (String(ticket.redmineVersionId) === query || query.includes(`/versions/${ticket.redmineVersionId}`));
+        });
         if (exact) {
             applyPlannerLinkedTicket(exact);
         }
@@ -4922,7 +4945,9 @@ function applyPlannerLinkedTicket(ticket) {
         memberIds: ticket.assigneeIds || []
     };
     els.plannerTaskStatus.value = ticket.statusId || "working";
-    setPlannerChoiceValue("priority", ticket.priorityId || els.plannerTaskPriority.value);
+    if (ticket.redmineLinkType !== "version") {
+        setPlannerChoiceValue("priority", ticket.priorityId || els.plannerTaskPriority.value);
+    }
     els.plannerTaskProgress.value = ticket.progress || 0;
     els.plannerTaskStart.value = ticket.startDate || "";
     els.plannerTaskDue.value = ticket.dueDate || "";
