@@ -60,6 +60,7 @@ class TeamViewHandler(BaseHTTPRequestHandler):
         self.started_at = time.monotonic()
         self.response_status = 500
         self.current_user = None
+        self._body_json = None
         parsed = urlparse(self.path)
         path = parsed.path
         query = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
@@ -102,8 +103,11 @@ class TeamViewHandler(BaseHTTPRequestHandler):
             if path == "/team-config.json":
                 if not user:
                     raise ApiError("Sign in required before team settings can be loaded.", 401)
+                self.authorize_backend_call(method, path, query, user)
                 if method == "GET":
-                    self.json(200, services.team_config_payload(DB))
+                    db_user = self.db_user(user)
+                    visible_teams = services.teams_for_user(DB, db_user["id"]) if db_user["role"] in ("lead", "member") else None
+                    self.json(200, services.team_config_payload(DB, restrict_to=visible_teams))
                     return
                 if method == "POST":
                     self.audit("team_config_save", user=user, outcome="attempt")
@@ -115,6 +119,7 @@ class TeamViewHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/"):
                 if not user:
                     raise ApiError("Sign in required.", 401)
+                self.authorize_backend_call(method, path, query, user)
                 self.handle_api(method, path, query, user)
                 return
 
@@ -122,6 +127,7 @@ class TeamViewHandler(BaseHTTPRequestHandler):
                 if not user:
                     raise ApiError("Sign in required before Redmine data can be loaded.", 401)
                 params = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
+                self.authorize_redmine_proxy_call(method, path, params, user)
                 LOGGER.info(
                     "redmine_passthrough request_id=%s user_id=%s role=%s path=%s params=%s",
                     self.request_id,
@@ -130,7 +136,9 @@ class TeamViewHandler(BaseHTTPRequestHandler):
                     path,
                     redact_params(params),
                 )
-                payload = REDMINE.get(path, user.get("redmine_api_key"), params)
+                payload = getattr(self, "_redmine_proxy_payload", None)
+                if payload is None:
+                    payload = REDMINE.get(path, user.get("redmine_api_key"), params)
                 self.json(200, payload)
                 return
 
@@ -172,6 +180,182 @@ class TeamViewHandler(BaseHTTPRequestHandler):
                 (self.current_user or {}).get("role", ""),
             )
 
+    def authorize_backend_call(self, method, path, query, user):
+        db_user = self.db_user(user)
+        if path == "/team-config.json":
+            if method == "GET":
+                return
+            self.require_role(db_user, {"manager", "admin"})
+            return
+
+        if path in ("/api/auth/me", "/api/bootstrap"):
+            self.require_method(method, "GET")
+            return
+        if path == "/api/preferences":
+            self.require_method(method, "PATCH")
+            return
+        if path in ("/api/teams", "/api/projects", "/api/users", "/api/redmine/projects"):
+            self.require_method(method, "GET")
+            self.authorize_project_query(db_user, query)
+            return
+        if path == "/api/redmine/recent-tickets":
+            self.require_method(method, "GET")
+            if db_user["role"] in ("lead", "member") and not query.get("projectId"):
+                raise PermissionError("Team-scoped Redmine ticket search requires a project.")
+            self.authorize_project_query(db_user, query)
+            return
+        if path == "/api/redmine/ticket":
+            self.require_method(method, "GET")
+            self.authorize_ticket_query(db_user, query, user.get("redmine_api_key"))
+            return
+        if path == "/api/tasks":
+            if method == "GET":
+                return
+            if method == "POST":
+                self.authorize_team_mutation(db_user, (self.body_json() or {}).get("teamId"))
+                return
+            raise ApiError("Unsupported method.", 405)
+        if path.startswith("/api/teams/"):
+            self.authorize_team_api_call(db_user, method, path)
+            return
+        if path.startswith("/api/tasks/"):
+            self.authorize_task_api_call(db_user, method, path)
+            return
+        if path == "/api/sync/redmine":
+            self.require_method(method, "POST")
+            self.require_role(db_user, {"manager", "admin"})
+            return
+        if path == "/api/sync/directory":
+            self.require_method(method, "POST")
+            self.require_role(db_user, {"manager"})
+            return
+        raise ApiError("Unknown API route.", 404)
+
+    def authorize_team_api_call(self, user, method, path):
+        parts = path.strip("/").split("/")
+        team_id = parts[2] if len(parts) > 2 else ""
+        if not team_id:
+            raise ApiError("Team id required.", 400)
+        if len(parts) == 3 and method == "GET":
+            self.authorize_team_view(user, team_id)
+            return
+        if method in ("POST", "PATCH", "DELETE"):
+            self.require_role(user, {"manager", "admin"})
+            return
+        raise ApiError("Unknown team route.", 404)
+
+    def authorize_task_api_call(self, user, method, path):
+        parts = path.strip("/").split("/")
+        if len(parts) < 3 or not parts[2].isdigit():
+            raise ApiError("Task id required.", 400)
+        task_id = int(parts[2])
+        if len(parts) == 3 and method == "GET":
+            self.authorize_task_view(user, task_id)
+            return
+        if len(parts) == 4 and parts[3] == "audit" and method == "GET":
+            self.authorize_task_view(user, task_id)
+            return
+        if len(parts) == 3 and method == "PATCH":
+            payload = self.body_json() or {}
+            self.authorize_task_mutation(user, task_id, payload.get("teamId"))
+            return
+        if len(parts) == 3 and method == "DELETE":
+            self.authorize_task_mutation(user, task_id)
+            return
+        if len(parts) == 4 and parts[3] in ("link", "sync-redmine", "unlink") and method == "POST":
+            self.authorize_task_mutation(user, task_id)
+            return
+        raise ApiError("Unknown task route.", 404)
+
+    def authorize_redmine_proxy_call(self, method, path, query, user):
+        self.require_method(method, "GET")
+        db_user = self.db_user(user)
+        if db_user["role"] in ("manager", "admin"):
+            return
+        team_ids = services.teams_for_user(DB, db_user["id"])
+        allowed_redmine_ids = {str(value) for value in services.redmine_user_ids_for_teams(DB, team_ids)}
+        if path == "/time_entries.json":
+            user_id = str(query.get("user_id") or "").strip()
+            if not user_id:
+                raise PermissionError("Team-scoped Redmine requests must include a user filter.")
+            if user_id not in allowed_redmine_ids:
+                raise PermissionError("You do not have access to this Redmine user.")
+            return
+        if path == "/issues.json":
+            assignee_id = str(query.get("assigned_to_id") or "").strip()
+            if not assignee_id:
+                raise PermissionError("Team-scoped Redmine requests must include an assignee filter.")
+            if assignee_id not in allowed_redmine_ids:
+                raise PermissionError("You do not have access to this Redmine user.")
+            return
+        if path == "/users.json":
+            raise PermissionError("Only managers can list Redmine users.")
+        if path.startswith("/issues/") and path.endswith(".json"):
+            payload = REDMINE.get(path, user.get("redmine_api_key"), query)
+            issue = payload.get("issue") or {}
+            assignee_id = str((issue.get("assigned_to") or {}).get("id") or "").strip()
+            if assignee_id and assignee_id in allowed_redmine_ids:
+                self._redmine_proxy_payload = payload
+                return
+            raise PermissionError("You do not have access to this Redmine issue.")
+        raise ApiError("Unknown Redmine proxy route.", 404)
+
+    def authorize_project_query(self, user, query):
+        project_id = query.get("projectId") or query.get("project_id")
+        if project_id and not services.user_can_access_project(DB, user, project_id):
+            raise PermissionError("You do not have access to this project.")
+
+    def authorize_ticket_query(self, user, query, api_key):
+        if user["role"] in ("manager", "admin"):
+            return
+        ticket = services.get_or_fetch_ticket(DB, REDMINE, api_key, query.get("value"))
+        if not ticket:
+            return
+        if not services.user_can_access_project(DB, user, ticket.get("projectId")):
+            raise PermissionError("You do not have access to this Redmine ticket.")
+
+    def authorize_task_view(self, user, task_id):
+        task = services.get_task(DB, task_id)
+        if not task:
+            raise KeyError("Task not found.")
+        if user["role"] in ("manager", "admin"):
+            return task
+        if task.get("teamId") not in services.teams_for_user(DB, user["id"]):
+            raise PermissionError("You do not have access to this task.")
+        return task
+
+    def authorize_task_mutation(self, user, task_id, target_team_id=None):
+        task = self.authorize_task_view(user, task_id)
+        if user["role"] in ("manager", "admin"):
+            return task
+        if user["role"] != "lead":
+            raise PermissionError("You do not have permission to change tasks.")
+        if target_team_id and target_team_id not in services.teams_for_user(DB, user["id"]):
+            raise PermissionError("You do not have access to the target team.")
+        return task
+
+    def authorize_team_view(self, user, team_id):
+        if user["role"] in ("manager", "admin"):
+            return
+        if team_id not in services.teams_for_user(DB, user["id"]):
+            raise PermissionError("You do not have access to this team.")
+
+    def authorize_team_mutation(self, user, team_id):
+        if user["role"] in ("manager", "admin"):
+            return
+        if user["role"] != "lead":
+            raise PermissionError("You do not have permission to change tasks.")
+        if team_id not in services.teams_for_user(DB, user["id"]):
+            raise PermissionError("You do not have access to this team.")
+
+    def require_role(self, user, roles):
+        if user["role"] not in roles:
+            raise PermissionError("You do not have permission to make this request.")
+
+    def require_method(self, method, expected):
+        if method != expected:
+            raise ApiError("Unsupported method.", 405)
+
     def handle_api(self, method, path, query, user):
         if path == "/api/auth/me" and method == "GET":
             self.json(200, {"user": services.user_payload(user, services.primary_team_for_user(DB, user["user_id"]))})
@@ -199,7 +383,7 @@ class TeamViewHandler(BaseHTTPRequestHandler):
             self.json(200, {
                 "user": services.user_payload(user, services.primary_team_for_user(DB, user["user_id"])),
                 "teams": services.list_teams(DB, restrict_to=lead_teams),
-                "users": services.list_users(DB),
+                "users": services.list_users(DB, restrict_to_teams=lead_teams),
                 "projects": services.list_projects(DB, restrict_to_teams=lead_teams),
                 "preferences": services.user_preferences(DB, user["user_id"]),
                 "directoryWarnings": directory_warnings,
@@ -222,10 +406,14 @@ class TeamViewHandler(BaseHTTPRequestHandler):
             preferences = services.save_user_preferences(DB, user["user_id"], self.body_json())
             self.json(200, {"preferences": preferences})
         elif path == "/api/redmine/projects" and method == "GET":
-            projects = services.list_redmine_projects(DB, REDMINE, user.get("redmine_api_key"), query.get("q", ""))
+            db_user = self.db_user(user)
+            lead_teams = services.teams_for_user(DB, db_user["id"]) if db_user["role"] in ("lead", "member") else None
+            projects = services.list_redmine_projects(DB, REDMINE, user.get("redmine_api_key"), query.get("q", ""), restrict_to_teams=lead_teams)
             self.json(200, {"projects": projects})
         elif path == "/api/users" and method == "GET":
-            self.json(200, {"users": services.list_users(DB)})
+            db_user = self.db_user(user)
+            visible_teams = services.teams_for_user(DB, db_user["id"]) if db_user["role"] in ("lead", "member") else None
+            self.json(200, {"users": services.list_users(DB, restrict_to_teams=visible_teams)})
         elif path == "/api/tasks" and method == "GET":
             self.json(200, {"tasks": services.list_tasks(DB, self.db_user(user), query)})
         elif path == "/api/tasks" and method == "POST":
@@ -391,14 +579,18 @@ class TeamViewHandler(BaseHTTPRequestHandler):
         self.json(200, {"user": services.user_payload(user, team_id), "directoryWarnings": directory_warnings})
 
     def body_json(self):
+        if self._body_json is not None:
+            return self._body_json
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             raise ApiError("Invalid Content-Length.", 400)
         if length <= 0:
-            return {}
+            self._body_json = {}
+            return self._body_json
         try:
-            return json.loads(self.rfile.read(length))
+            self._body_json = json.loads(self.rfile.read(length))
+            return self._body_json
         except json.JSONDecodeError:
             raise ApiError("Request body must be valid JSON.", 400)
 

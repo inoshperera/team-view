@@ -1042,9 +1042,17 @@ def lead_users_by_team(db, team_ids):
     return result
 
 
-def team_config_payload(db):
+def team_config_payload(db, restrict_to=None):
     payload = []
-    for team in db.query("SELECT id,name,parent_team_id FROM teams WHERE is_active=1 ORDER BY name"):
+    extra = ""
+    args = []
+    if restrict_to is not None:
+        if not restrict_to:
+            return {"teams": []}
+        placeholders = ",".join(["%s"] * len(restrict_to))
+        extra = f" AND id IN ({placeholders})"
+        args = list(restrict_to)
+    for team in db.query(f"SELECT id,name,parent_team_id FROM teams WHERE is_active=1{extra} ORDER BY name", args):
         members = db.query(
             """
             SELECT u.redmine_user_id
@@ -1287,21 +1295,59 @@ def set_team_projects(db, team_id, project_ids):
     return get_team(db, team_id)
 
 
-def list_users(db):
+def list_users(db, restrict_to_teams=None):
+    extra = ""
+    args = []
+    if restrict_to_teams is not None:
+        if not restrict_to_teams:
+            return []
+        placeholders = ",".join(["%s"] * len(restrict_to_teams))
+        extra = f" AND EXISTS (SELECT 1 FROM team_members visible_tm WHERE visible_tm.user_id=u.id AND visible_tm.team_id IN ({placeholders}))"
+        args = list(restrict_to_teams)
     rows = db.query(
-        """
+        f"""
         SELECT u.*, GROUP_CONCAT(tm.team_id ORDER BY tm.team_id) AS team_ids
         FROM users u LEFT JOIN team_members tm ON tm.user_id=u.id
-        WHERE u.is_active=1 AND u.external_member_id IS NOT NULL
+        WHERE u.is_active=1 AND u.external_member_id IS NOT NULL{extra}
         GROUP BY u.id
         ORDER BY u.first_name,u.last_name
-        """
+        """,
+        args,
     )
     users = []
     for row in rows:
         team_ids = [value for value in str(row.get("team_ids") or "").split(",") if value]
         users.append(member_payload(row, team_ids[0] if team_ids else None, team_ids))
     return users
+
+
+def redmine_user_ids_for_teams(db, team_ids):
+    if not team_ids:
+        return []
+    placeholders = ",".join(["%s"] * len(team_ids))
+    rows = db.query(
+        f"""
+        SELECT DISTINCT u.redmine_user_id
+        FROM users u JOIN team_members tm ON tm.user_id=u.id
+        WHERE tm.team_id IN ({placeholders})
+          AND u.is_active=1
+          AND u.redmine_user_id IS NOT NULL
+        """,
+        list(team_ids),
+    )
+    return [int(row["redmine_user_id"]) for row in rows]
+
+
+def user_can_access_project(db, user, project_id):
+    if user["role"] in ("manager", "admin"):
+        return True
+    if not project_id:
+        return True
+    project = db.one("SELECT owner_team_id FROM projects WHERE id=%s AND is_active=1", (project_id,))
+    if not project:
+        return False
+    owner_team_id = project.get("owner_team_id")
+    return not owner_team_id or owner_team_id in teams_for_user(db, user["id"])
 
 
 def member_payload(user, team_id=None, team_ids=None):
@@ -1340,7 +1386,7 @@ def list_projects(db, restrict_to_teams=None):
     )
 
 
-def list_redmine_projects(db, redmine, api_key, query=""):
+def list_redmine_projects(db, redmine, api_key, query="", restrict_to_teams=None):
     projects = []
     offset = 0
     limit = 100
@@ -1355,7 +1401,7 @@ def list_redmine_projects(db, redmine, api_key, query=""):
         if offset >= total or not batch or offset >= 500:
             break
 
-    rows = [row for row in list_projects(db) if row.get("source") == "redmine"]
+    rows = [row for row in list_projects(db, restrict_to_teams=restrict_to_teams) if row.get("source") == "redmine"]
     needle = str(query or "").strip().lower()
     if needle:
         rows = [
