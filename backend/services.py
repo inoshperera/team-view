@@ -1517,7 +1517,7 @@ def map_status(name):
     value = str(name or "").strip().lower()
     if value == "new":
         return "new"
-    if "closed" in value or "done" in value:
+    if "closed" in value or "done" in value or "staged" in value:
         return "done"
     if "hold" in value:
         return "onhold"
