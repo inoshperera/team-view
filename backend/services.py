@@ -1643,6 +1643,8 @@ def list_tasks(db, user, filters):
     if filters.get("parent_task_id"):
         where.append("t.parent_task_id=%s")
         args.append(filters["parent_task_id"])
+    elif not truthy(filters.get("include_children")):
+        where.append("t.parent_task_id IS NULL")
     for key, column in (("category", "category_id"), ("priority", "priority_id"), ("status", "status_id")):
         if filters.get(key):
             where.append(f"t.{column}=%s")

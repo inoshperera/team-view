@@ -381,7 +381,7 @@ def find_ready_rows(task_rows: list[TaskRow], created_ids: dict[str, int]) -> li
 
 
 def existing_task_keys(client: ApiClient) -> set[tuple[str, str, str]]:
-    payload = client.request("GET", "/api/tasks")
+    payload = client.request("GET", "/api/tasks?include_children=1")
     keys = set()
     for task in payload.get("tasks", []):
         keys.add((normalize_key(task.get("teamId")), normalize_key(task.get("title")), str(task.get("startDate") or "")))
