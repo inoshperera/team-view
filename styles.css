@@ -2513,6 +2513,19 @@ h1 {
     flex-shrink: 0;
 }
 
+.synced-panel-loading {
+    min-height: 104px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.synced-panel-loading .spinner {
+    width: 24px;
+    height: 24px;
+    border-width: 3px;
+}
+
 .synced-open-link,
 .synced-sync-btn,
 .synced-unlink-btn {

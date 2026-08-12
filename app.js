@@ -64,6 +64,7 @@ const state = {
         editorTask: null,
         editorParentTaskId: null,
         linkedTicket: null,
+        ticketLookup: null,
         syncingRedmine: false,
         syncingTaskIds: new Set(),
         preferences: {
@@ -4555,6 +4556,7 @@ async function openPlannerEditor(task, options = {}) {
     state.planner.editorTask = task ? { ...task } : null;
     state.planner.editorParentTaskId = task?.parentTaskId || parentTask?.id || null;
     state.planner.linkedTicket = task?.redmineLinked ? task : null;
+    state.planner.ticketLookup = null;
     els.plannerTaskEyebrow.textContent = task
         ? `Edit task · ${task.teamId}`
         : parentTask
@@ -4593,6 +4595,7 @@ function closePlannerEditor() {
     state.planner.editorTask = null;
     state.planner.editorParentTaskId = null;
     state.planner.linkedTicket = null;
+    state.planner.ticketLookup = null;
     els.plannerTaskModal.classList.add("is-hidden");
 }
 
@@ -4722,6 +4725,7 @@ function applySyncedTaskToPlannerEditor(task) {
     }
     state.planner.editorTask = { ...task };
     state.planner.linkedTicket = { ...task, memberIds: task.memberIds || [] };
+    state.planner.ticketLookup = null;
     els.plannerTaskStatus.value = task.statusId || "working";
     setPlannerChoiceValue("priority", task.priorityId || els.plannerTaskPriority.value);
     els.plannerTaskProgress.value = clampProgress(task.progress);
@@ -4779,10 +4783,13 @@ function teamNamesForPlannerUser(user) {
 function renderPlannerSyncedPanel() {
     const ticket = state.planner.linkedTicket;
     const synced = !!ticket;
+    const lookup = state.planner.ticketLookup;
+    const lookupLoading = Boolean(lookup?.loading && !synced);
     const isVersion = ticket?.redmineLinkType === "version";
     const syncing = synced && isPlannerTaskSyncing(state.planner.editorTask?.id || ticket.id);
 
-    els.plannerSyncedPanel.classList.toggle("is-hidden", !synced);
+    els.plannerSyncedPanel.classList.toggle("is-hidden", !synced && !lookupLoading);
+    els.plannerSyncedPanel.classList.toggle("is-loading", lookupLoading);
     document.querySelectorAll(".synced-hideable").forEach((el) => {
         const staysEditable = isVersion && el.id === "priorityFieldWrap";
         el.classList.toggle("is-hidden", synced && !staysEditable);
@@ -4794,6 +4801,20 @@ function renderPlannerSyncedPanel() {
     updatePlannerDueRequirement();
     const membersBadge = document.getElementById("membersSyncedBadge");
     if (membersBadge) membersBadge.classList.toggle("is-hidden", !synced);
+
+    if (lookupLoading) {
+        const label = lookup.type === "version" ? "version" : "ticket";
+        els.plannerSyncedPanel.innerHTML = `
+            <div class="synced-panel-loading" role="status" aria-live="polite">
+                <span class="spinner" aria-hidden="true"></span>
+                <div>
+                    <strong class="synced-panel-title">FETCHING REDMINE DETAILS</strong>
+                    <p class="synced-panel-desc">Loading ${escapeHtml(label)} fields from Redmine. Synced fields will appear here when the lookup completes.</p>
+                </div>
+            </div>
+        `;
+        return;
+    }
 
     if (!synced) return;
 
@@ -4884,8 +4905,11 @@ function handlePlannerRedmineSearchInput() {
     window.clearTimeout(handlePlannerRedmineSearchInput.timer);
     if (!els.plannerTaskRedmineSearch.value.trim()) {
         els.plannerTicketOptions.innerHTML = "";
+        state.planner.ticketLookup = null;
         if (state.planner.linkedTicket) {
             clearPlannerLinkedTicket({ clearInput: false });
+        } else {
+            renderPlannerSyncedPanel();
         }
         return;
     }
@@ -4894,6 +4918,7 @@ function handlePlannerRedmineSearchInput() {
 
 function clearPlannerLinkedTicket({ clearInput = true } = {}) {
     state.planner.linkedTicket = null;
+    state.planner.ticketLookup = null;
     if (clearInput) {
         els.plannerTaskRedmineSearch.value = "";
     }
@@ -4907,8 +4932,20 @@ async function loadPlannerTicketOptions() {
     if (!projectId && !query) {
         return;
     }
+    const lookupTarget = redmineLookupTarget(query);
+    if (lookupTarget) {
+        state.planner.ticketLookup = { loading: true, query, type: lookupTarget };
+        renderPlannerSyncedPanel();
+    }
     try {
         const payload = await apiJson(`/api/redmine/recent-tickets?projectId=${encodeURIComponent(projectId)}&q=${encodeURIComponent(query)}`);
+        if (els.plannerTaskRedmineSearch.value.trim() !== query) {
+            if (state.planner.ticketLookup?.query === query) {
+                state.planner.ticketLookup = null;
+                renderPlannerSyncedPanel();
+            }
+            return;
+        }
         els.plannerTicketOptions.innerHTML = (payload.tickets || []).map((ticket) => `<option value="${escapeHtml(ticket.issueKey || ticket.redmineIssueId || ticket.redmineVersionId)}">${escapeHtml(ticket.title)}</option>`).join("");
         const exact = (payload.tickets || []).find((ticket) => {
             if (String(ticket.issueKey) === query || String(ticket.redmineIssueId) === query || query.includes(`/issues/${ticket.redmineIssueId}`)) {
@@ -4919,10 +4956,31 @@ async function loadPlannerTicketOptions() {
         });
         if (exact) {
             applyPlannerLinkedTicket(exact);
+        } else if (lookupTarget && state.planner.ticketLookup?.query === query) {
+            state.planner.ticketLookup = null;
+            renderPlannerSyncedPanel();
         }
     } catch {
         els.plannerTicketOptions.innerHTML = "";
+        if (lookupTarget && state.planner.ticketLookup?.query === query) {
+            state.planner.ticketLookup = null;
+            renderPlannerSyncedPanel();
+        }
     }
+}
+
+function redmineLookupTarget(value) {
+    const text = String(value || "").trim();
+    if (!text) {
+        return null;
+    }
+    if (/(?:versions\/|version:|v:)\d+/i.test(text)) {
+        return "version";
+    }
+    if (/(?:issues\/|#)?\d+/.test(text) || /-\d+$/.test(text)) {
+        return "ticket";
+    }
+    return null;
 }
 
 function togglePlannerExtraFields() {
@@ -4944,6 +5002,7 @@ function applyPlannerLinkedTicket(ticket) {
         ...ticket,
         memberIds: ticket.assigneeIds || []
     };
+    state.planner.ticketLookup = null;
     els.plannerTaskStatus.value = ticket.statusId || "working";
     if (ticket.redmineLinkType !== "version") {
         setPlannerChoiceValue("priority", ticket.priorityId || els.plannerTaskPriority.value);
