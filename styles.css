@@ -597,6 +597,7 @@ h1 {
     border-radius: var(--radius);
     background: var(--surface);
     color: var(--text);
+    font: inherit;
     text-align: left;
     padding: 12px;
     cursor: pointer;

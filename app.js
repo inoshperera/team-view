@@ -52,6 +52,7 @@ const state = {
         listView: true,
         groupMode: "priority",
         nonePriorityFirst: false,
+        drilldown: "",
         extraFieldsOpen: false,
         expandedOrgTaskId: null,
         orgLoadingParentId: null,
@@ -553,7 +554,9 @@ function bindEvents() {
     els.plannerPriorityFilter.addEventListener("change", () => updatePlannerFilter("priority", els.plannerPriorityFilter.value));
     els.plannerSearch.addEventListener("input", () => updatePlannerFilter("q", els.plannerSearch.value));
     els.plannerGroupSelect?.addEventListener("change", () => setPlannerGroup(els.plannerGroupSelect.value));
-    els.plannerNonePriorityTile.addEventListener("click", toggleNonePriorityTasksFirst);
+    document.querySelectorAll("[data-planner-drilldown]").forEach((button) => {
+        button.addEventListener("click", () => togglePlannerDrilldown(button.dataset.plannerDrilldown));
+    });
     els.closePlannerTaskButton.addEventListener("click", closePlannerEditor);
     els.cancelPlannerTaskButton.addEventListener("click", closePlannerEditor);
     els.deletePlannerTaskButton.addEventListener("click", deletePlannerTask);
@@ -911,6 +914,8 @@ function updatePlannerFilter(key, value) {
             state.planner.filters.q = "";
             state.planner.advancedFiltersOpen = false;
             state.planner.groupMode = "priority";
+            state.planner.drilldown = "";
+            state.planner.nonePriorityFirst = false;
         }
     }
     syncPlannerControls();
@@ -968,20 +973,25 @@ async function handlePlannerHideDoneChange() {
 }
 
 function toggleNonePriorityTasksFirst() {
-    if (state.planner.nonePriorityFirst) {
-        closeNonePriorityTasksFirst();
-        return;
-    }
-    state.planner.nonePriorityFirst = true;
-    syncPlannerControls();
-    renderPlanner();
-    els.plannerBoard.scrollIntoView({ behavior: "smooth", block: "start" });
+    togglePlannerDrilldown("none");
 }
 
 function closeNonePriorityTasksFirst() {
+    state.planner.drilldown = "";
     state.planner.nonePriorityFirst = false;
     syncPlannerControls();
     renderPlanner();
+}
+
+function togglePlannerDrilldown(kind) {
+    const next = state.planner.drilldown === kind ? "" : kind;
+    state.planner.drilldown = next;
+    state.planner.nonePriorityFirst = next === "none";
+    syncPlannerControls();
+    renderPlanner();
+    if (next) {
+        els.plannerBoard.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
 }
 
 function handleViewChange() {
@@ -3275,9 +3285,10 @@ function renderPlannerUserChip() {
 
 function renderPlanner() {
     syncPlannerControls();
+    const baseTasks = plannerBaseTasks();
     const tasks = plannerVisibleTasks();
-    const openTasks = tasks.filter((task) => task.statusId !== "done");
-    const teamsInScope = new Set(tasks.map((task) => task.teamId));
+    const openTasks = baseTasks.filter((task) => task.statusId !== "done");
+    const teamsInScope = new Set(baseTasks.map((task) => task.teamId));
     els.plannerTeamCount.textContent = state.auth.user?.role === "lead" ? 1 : (teamsInScope.size || state.planner.teams.length);
     els.plannerOpenCount.textContent = openTasks.length;
     els.plannerCriticalCount.textContent = openTasks.filter((task) => task.priorityId === "critical").length;
@@ -3285,27 +3296,32 @@ function renderPlanner() {
     const nonePriorityCount = openTasks.filter((task) => task.priorityId === "none").length;
     els.plannerNoneCount.textContent = nonePriorityCount;
     els.plannerNonePriorityTile.classList.toggle("has-warning", nonePriorityCount > 0);
-    els.plannerNonePriorityTile.classList.toggle("is-selected", state.planner.nonePriorityFirst);
+    document.querySelectorAll("[data-planner-drilldown]").forEach((button) => {
+        const selected = button.dataset.plannerDrilldown === state.planner.drilldown;
+        button.classList.toggle("is-selected", selected);
+        button.setAttribute("aria-pressed", selected ? "true" : "false");
+    });
     els.plannerBoard.innerHTML = "";
 
-    if (tasks.length === 0) {
+    if (tasks.length === 0 && !state.planner.drilldown) {
         els.plannerBoard.innerHTML = `<div class="empty-state planner-empty"><h2>No high-level tasks yet</h2><p>Create a task and optionally link it to a Redmine ticket.</p></div>`;
         return;
     }
 
-    if (state.planner.nonePriorityFirst) {
+    if (state.planner.drilldown) {
         els.plannerBoard.classList.add("is-list");
         els.plannerBoard.classList.remove("is-lanes", "is-organization-list");
-        const listTasks = nonePrioritySortedTasks(openTasks);
+        const drilldown = plannerDrilldownMeta(state.planner.drilldown);
+        const listTasks = state.planner.drilldown === "none" ? nonePrioritySortedTasks(tasks) : plannerSortTasks(tasks);
         els.plannerBoard.innerHTML = `
             <div class="planner-none-list-banner">
                 <div>
-                    <strong>No priority tasks</strong>
-                    <span>${listTasks.length ? "Shown first so they can be triaged into a real priority." : "There are no no-priority tasks in the current view."}</span>
+                    <strong>${escapeHtml(drilldown.title)}</strong>
+                    <span>${escapeHtml(listTasks.length ? drilldown.description : drilldown.emptyDescription)}</span>
                 </div>
-                <button class="secondary-button" id="closeNonePriorityListButton" type="button">Close</button>
+                <button class="secondary-button" id="closePlannerDrilldownButton" type="button">Close</button>
             </div>
-            ${listTasks.length ? listTasks.map(renderPlannerTaskCard).join("") : `<div class="empty-state planner-empty"><h2>No non priority tasks</h2><p>The current team and filter selection has no open tasks without a priority.</p></div>`}
+            ${listTasks.length ? listTasks.map(renderPlannerTaskCard).join("") : `<div class="empty-state planner-empty"><h2>${escapeHtml(drilldown.emptyTitle)}</h2><p>${escapeHtml(drilldown.emptyDescription)}</p></div>`}
         `;
     } else if (state.planner.listView) {
         els.plannerBoard.classList.add("is-list", "is-organization-list");
@@ -3330,7 +3346,7 @@ function renderPlanner() {
         }).join("");
     }
 
-    els.plannerBoard.querySelector("#closeNonePriorityListButton")?.addEventListener("click", closeNonePriorityTasksFirst);
+    els.plannerBoard.querySelector("#closePlannerDrilldownButton")?.addEventListener("click", closeNonePriorityTasksFirst);
     bindPlannerDragAndDrop();
     els.plannerBoard.querySelectorAll("[data-planner-view]").forEach((button) => {
         button.addEventListener("click", () => {
@@ -3388,10 +3404,71 @@ function renderPlanner() {
     });
 }
 
-function plannerVisibleTasks() {
+function plannerBaseTasks() {
     return state.planner.preferences.hideDoneTasks
         ? state.planner.tasks.filter((task) => task.statusId !== "done")
         : state.planner.tasks;
+}
+
+function plannerVisibleTasks() {
+    return applyPlannerDrilldown(plannerBaseTasks());
+}
+
+function applyPlannerDrilldown(tasks) {
+    if (state.planner.drilldown === "open") {
+        return tasks.filter((task) => task.statusId !== "done");
+    }
+    if (state.planner.drilldown === "critical") {
+        return tasks.filter((task) => task.statusId !== "done" && task.priorityId === "critical");
+    }
+    if (state.planner.drilldown === "overdue") {
+        return tasks.filter((task) => task.statusId !== "done" && isOverdue(task.dueDate));
+    }
+    if (state.planner.drilldown === "none") {
+        return tasks.filter((task) => task.statusId !== "done" && task.priorityId === "none");
+    }
+    return tasks;
+}
+
+function plannerSortTasks(tasks) {
+    return [...tasks].sort((a, b) => {
+        const dueA = a.dueDate || "9999-12-31";
+        const dueB = b.dueDate || "9999-12-31";
+        if (dueA !== dueB) {
+            return dueA.localeCompare(dueB);
+        }
+        return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
+    });
+}
+
+function plannerDrilldownMeta(kind) {
+    const labels = {
+        open: {
+            title: "Open high-level tasks",
+            description: "Showing open tasks in the current team and filter selection.",
+            emptyTitle: "No open tasks",
+            emptyDescription: "The current team and filter selection has no open tasks."
+        },
+        critical: {
+            title: "Critical tasks",
+            description: "Showing open critical tasks in the current team and filter selection.",
+            emptyTitle: "No critical tasks",
+            emptyDescription: "The current team and filter selection has no open critical tasks."
+        },
+        overdue: {
+            title: "Overdue tasks",
+            description: "Showing open tasks with due dates before today.",
+            emptyTitle: "No overdue tasks",
+            emptyDescription: "The current team and filter selection has no overdue open tasks."
+        },
+        none: {
+            title: "No priority tasks",
+            description: "Shown first so they can be triaged into a real priority.",
+            emptyTitle: "No no-priority tasks",
+            emptyDescription: "The current team and filter selection has no open tasks without a priority."
+        }
+    };
+    return labels[kind] || labels.open;
 }
 
 function bindPlannerDragAndDrop() {
