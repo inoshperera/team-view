@@ -53,6 +53,7 @@ const state = {
         groupMode: "priority",
         nonePriorityFirst: false,
         drilldown: "",
+        warningDrilldown: null,
         extraFieldsOpen: false,
         expandedOrgTaskId: null,
         orgLoadingParentId: null,
@@ -906,6 +907,10 @@ function defaultWorkTeamId(preferredTeamId = "") {
 
 function updatePlannerFilter(key, value) {
     state.planner.filters[key] = value;
+    if (state.planner.drilldown === "warning") {
+        state.planner.drilldown = "";
+        state.planner.warningDrilldown = null;
+    }
     if (key === "teamId") {
         state.planner.filters.memberId = "";
         if (isRootPlannerTeam(value)) {
@@ -916,6 +921,7 @@ function updatePlannerFilter(key, value) {
             state.planner.groupMode = "priority";
             state.planner.drilldown = "";
             state.planner.nonePriorityFirst = false;
+            state.planner.warningDrilldown = null;
         }
     }
     syncPlannerControls();
@@ -979,6 +985,7 @@ function toggleNonePriorityTasksFirst() {
 function closeNonePriorityTasksFirst() {
     state.planner.drilldown = "";
     state.planner.nonePriorityFirst = false;
+    state.planner.warningDrilldown = null;
     syncPlannerControls();
     renderPlanner();
 }
@@ -987,6 +994,7 @@ function togglePlannerDrilldown(kind) {
     const next = state.planner.drilldown === kind ? "" : kind;
     state.planner.drilldown = next;
     state.planner.nonePriorityFirst = next === "none";
+    state.planner.warningDrilldown = null;
     syncPlannerControls();
     renderPlanner();
     if (next) {
@@ -1265,7 +1273,10 @@ function setDirectoryWarnings(warnings, options = {}) {
             severity: warning.severity || "warning",
             title: warning.title || "Directory warning",
             message: warning.message || "",
-            items: Array.isArray(warning.items) ? warning.items : []
+            items: Array.isArray(warning.items) ? warning.items : [],
+            taskIds: Array.isArray(warning.taskIds)
+                ? [...new Set(warning.taskIds.map((id) => Number(id)).filter((id) => Number.isFinite(id)))]
+                : []
         });
     });
     state.directoryWarnings.items = items;
@@ -1289,7 +1300,48 @@ function handleDirectoryWarningClick(event) {
     if (action === "toggle") {
         state.directoryWarnings.expanded = !state.directoryWarnings.expanded;
     }
+    if (action === "view-issues") {
+        const type = event.target.closest("[data-directory-warning-type]")?.dataset.directoryWarningType || "";
+        viewDirectoryWarningIssues(type);
+        return;
+    }
     renderDirectoryWarnings();
+}
+
+async function viewDirectoryWarningIssues(type) {
+    const warning = (state.directoryWarnings.items || []).find((item) => item.type === type);
+    const taskIds = warning?.taskIds || [];
+    if (!warning || !taskIds.length) {
+        return;
+    }
+    state.view = "planner";
+    state.planner.drilldown = "warning";
+    state.planner.nonePriorityFirst = false;
+    state.planner.warningDrilldown = {
+        type: warning.type,
+        title: warning.title,
+        description: `${warning.message} Showing the affected active tasks below.`,
+        taskIds,
+        tasks: [],
+        loading: true,
+        error: ""
+    };
+    render();
+    els.plannerBoard.scrollIntoView({ behavior: "smooth", block: "start" });
+    try {
+        const params = new URLSearchParams({
+            task_ids: taskIds.join(","),
+            hide_done: "0",
+            include_children: "1"
+        });
+        const payload = await apiJson(`/api/tasks?${params}`);
+        state.planner.warningDrilldown.tasks = plannerSortTasks(payload.tasks || []);
+    } catch (error) {
+        state.planner.warningDrilldown.error = error.message || "Unable to load affected tasks.";
+    } finally {
+        state.planner.warningDrilldown.loading = false;
+        render();
+    }
 }
 
 function handleWorkScopeModeChange() {
@@ -3114,6 +3166,7 @@ function renderDirectoryWarnings() {
     }
     const expanded = state.directoryWarnings.expanded;
     const primary = items[0];
+    const issueWarning = items.find((item) => item.type === "inactive_assignees" && item.taskIds?.length > 0);
     const detailRows = items.map((item) => `
         <div class="directory-warning-item directory-warning-${escapeHtml(item.severity)}">
             <strong>${escapeHtml(item.title)}</strong>
@@ -3128,6 +3181,7 @@ function renderDirectoryWarnings() {
                 <span>${escapeHtml(primary.message)}</span>
             </div>
             <div class="directory-warning-actions">
+                ${issueWarning ? `<button class="secondary-button" type="button" data-directory-warning-action="view-issues" data-directory-warning-type="${escapeHtml(issueWarning.type)}">View issues</button>` : ""}
                 <button class="secondary-button" type="button" data-directory-warning-action="toggle">${expanded ? "Collapse" : `Details (${items.length})`}</button>
                 <button class="secondary-button" type="button" data-directory-warning-action="dismiss">Close</button>
             </div>
@@ -3312,16 +3366,27 @@ function renderPlanner() {
         els.plannerBoard.classList.add("is-list");
         els.plannerBoard.classList.remove("is-lanes", "is-organization-list");
         const drilldown = plannerDrilldownMeta(state.planner.drilldown);
-        const listTasks = state.planner.drilldown === "none" ? nonePrioritySortedTasks(tasks) : plannerSortTasks(tasks);
+        const isWarningDrilldown = state.planner.drilldown === "warning";
+        const warningDrilldown = isWarningDrilldown ? state.planner.warningDrilldown : null;
+        const listTasks = isWarningDrilldown
+            ? plannerSortTasks(warningDrilldown?.tasks || [])
+            : state.planner.drilldown === "none" ? nonePrioritySortedTasks(tasks) : plannerSortTasks(tasks);
+        const drilldownDescription = warningDrilldown?.error
+            ? warningDrilldown.error
+            : warningDrilldown?.loading
+                ? "Loading affected issues."
+                : listTasks.length ? drilldown.description : drilldown.emptyDescription;
         els.plannerBoard.innerHTML = `
             <div class="planner-none-list-banner">
                 <div>
                     <strong>${escapeHtml(drilldown.title)}</strong>
-                    <span>${escapeHtml(listTasks.length ? drilldown.description : drilldown.emptyDescription)}</span>
+                    <span>${escapeHtml(drilldownDescription)}</span>
                 </div>
                 <button class="secondary-button" id="closePlannerDrilldownButton" type="button">Close</button>
             </div>
-            ${listTasks.length ? listTasks.map(renderPlannerTaskCard).join("") : `<div class="empty-state planner-empty"><h2>${escapeHtml(drilldown.emptyTitle)}</h2><p>${escapeHtml(drilldown.emptyDescription)}</p></div>`}
+            ${warningDrilldown?.loading
+                ? `<div class="empty-state planner-empty"><h2><span class="spinner" aria-hidden="true"></span> Loading issues</h2><p>Fetching the active tasks tied to inactive assignees.</p></div>`
+                : listTasks.length ? listTasks.map(renderPlannerTaskCard).join("") : `<div class="empty-state planner-empty"><h2>${escapeHtml(drilldown.emptyTitle)}</h2><p>${escapeHtml(warningDrilldown?.error || drilldown.emptyDescription)}</p></div>`}
         `;
     } else if (state.planner.listView) {
         els.plannerBoard.classList.add("is-list", "is-organization-list");
@@ -3427,6 +3492,9 @@ function applyPlannerDrilldown(tasks) {
     if (state.planner.drilldown === "none") {
         return tasks.filter((task) => task.statusId !== "done" && task.priorityId === "none");
     }
+    if (state.planner.drilldown === "warning") {
+        return tasks;
+    }
     return tasks;
 }
 
@@ -3466,6 +3534,12 @@ function plannerDrilldownMeta(kind) {
             description: "Shown first so they can be triaged into a real priority.",
             emptyTitle: "No no-priority tasks",
             emptyDescription: "The current team and filter selection has no open tasks without a priority."
+        },
+        warning: {
+            title: state.planner.warningDrilldown?.title || "Affected issues",
+            description: state.planner.warningDrilldown?.description || "Showing affected active tasks.",
+            emptyTitle: "No affected issues",
+            emptyDescription: "No affected active tasks are visible for your account."
         }
     };
     return labels[kind] || labels.open;
@@ -3655,6 +3729,10 @@ function findPlannerTaskById(taskId) {
             return child;
         }
     }
+    const warningTask = state.planner.warningDrilldown?.tasks?.find((item) => String(item.id) === id);
+    if (warningTask) {
+        return warningTask;
+    }
     return null;
 }
 
@@ -3694,6 +3772,9 @@ function upsertPlannerTaskInState(task) {
     };
     replaceInList(state.planner.tasks);
     state.planner.orgChildTasks.forEach((tasks) => replaceInList(tasks));
+    if (state.planner.warningDrilldown?.tasks) {
+        replaceInList(state.planner.warningDrilldown.tasks);
+    }
 }
 
 async function syncPlannerTaskFromRedmine(taskId, options = {}) {

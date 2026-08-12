@@ -684,21 +684,45 @@ def directory_health(db):
             "items": [],
         })
 
-    inactive_assignee_summary = db.one(
+    inactive_assignee_rows = db.query(
         """
-        SELECT COUNT(DISTINCT ta.user_id) AS count
+        SELECT
+          u.id AS user_id,
+          u.display_name,
+          u.first_name,
+          u.last_name,
+          u.email,
+          COUNT(DISTINCT t.id) AS task_count,
+          GROUP_CONCAT(DISTINCT t.id ORDER BY t.updated_at DESC SEPARATOR ',') AS task_ids
         FROM task_assignments ta JOIN users u ON u.id=ta.user_id JOIN tasks t ON t.id=ta.task_id
-        WHERE u.is_active=0 AND t.deleted_at IS NULL
+        WHERE u.is_active=0 AND t.deleted_at IS NULL AND t.status_id<>'done'
+        GROUP BY u.id, u.display_name, u.first_name, u.last_name, u.email
+        ORDER BY task_count DESC, u.first_name, u.last_name
         """
     )
-    inactive_assignee_count = int((inactive_assignee_summary or {}).get("count") or 0)
+    inactive_assignee_count = len(inactive_assignee_rows)
     if inactive_assignee_count:
+        task_ids = []
+        inactive_items = []
+        for row in inactive_assignee_rows:
+            display = (
+                row.get("display_name")
+                or f"{row.get('first_name', '')} {row.get('last_name', '')}".strip()
+                or row.get("email")
+                or f"User {row['user_id']}"
+            )
+            task_count = int(row.get("task_count") or 0)
+            inactive_items.append(f"{display} - {task_count} active task{'' if task_count == 1 else 's'}")
+            for task_id in str(row.get("task_ids") or "").split(","):
+                if task_id.isdigit():
+                    task_ids.append(int(task_id))
         warnings.append({
             "type": "inactive_assignees",
             "severity": "info",
             "title": "Inactive assignees remain on tasks",
             "message": f"{inactive_assignee_count} inactive user(s) are still assigned to active tasks.",
-            "items": [],
+            "items": inactive_items[:12],
+            "taskIds": sorted(set(task_ids)),
         })
 
     no_lead_rows = db.query(
@@ -1842,10 +1866,20 @@ def list_tasks(db, user, filters):
     if filters.get("member_id"):
         where.append("EXISTS (SELECT 1 FROM task_assignments ta WHERE ta.task_id=t.id AND ta.user_id=%s)")
         args.append(filters["member_id"])
+    raw_task_ids = str(filters.get("task_ids") or "").strip()
+    task_ids = [int(value) for value in raw_task_ids.split(",") if str(value).isdigit()]
+    if raw_task_ids:
+        if task_ids:
+            task_ids = task_ids[:500]
+            placeholders = ",".join(["%s"] * len(task_ids))
+            where.append(f"t.id IN ({placeholders})")
+            args.extend(task_ids)
+        else:
+            where.append("1=0")
     if filters.get("parent_task_id"):
         where.append("t.parent_task_id=%s")
         args.append(filters["parent_task_id"])
-    elif not truthy(filters.get("include_children")):
+    elif not task_ids and not truthy(filters.get("include_children")):
         where.append("t.parent_task_id IS NULL")
     for key, column in (("category", "category_id"), ("priority", "priority_id"), ("status", "status_id")):
         if filters.get(key):
