@@ -2473,14 +2473,26 @@ async function saveTeamConfigToFile() {
     // New UI uses createTeam() which calls POST /api/teams directly
 }
 
+function createRequestId() {
+    if (window.crypto?.randomUUID) {
+        return window.crypto.randomUUID();
+    }
+    return `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function withRequestRef(message, requestId) {
+    return requestId ? `${message} Reference: ${requestId}.` : message;
+}
+
 async function postJson(path, payload) {
     const url = new URL(`${state.config.proxyUrl}${path}`);
+    const requestId = createRequestId();
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), state.config.requestTimeoutMs);
     try {
         const response = await fetch(url, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", "X-Request-ID": requestId },
             body: JSON.stringify(payload),
             credentials: "include",
             signal: controller.signal
@@ -2488,15 +2500,15 @@ async function postJson(path, payload) {
         const text = await response.text();
         const parsed = text ? JSON.parse(text) : {};
         if (!response.ok) {
-            throw new Error(formatProxyError(response.status, parsed));
+            throw new Error(formatProxyError(response.status, parsed, response.headers.get("X-Request-ID") || requestId));
         }
         return parsed;
     } catch (error) {
         if (error.name === "AbortError") {
-            throw new Error("Saving team config timed out.");
+            throw new Error(withRequestRef("Saving team config timed out.", requestId));
         }
         if (error instanceof TypeError) {
-            throw new Error("Unable to reach the local proxy to save team config.");
+            throw new Error(withRequestRef("Unable to reach the local proxy to save team config.", requestId));
         }
         throw error;
     } finally {
@@ -2690,6 +2702,7 @@ async function fetchAllPages(path, params = {}, collectionKey) {
 
 async function fetchJson(path, params = {}) {
     const url = new URL(`${state.config.proxyUrl}${path}`);
+    const requestId = createRequestId();
     Object.entries(params).forEach(([key, value]) => {
         if (value !== undefined && value !== null && value !== "") {
             url.searchParams.set(key, value);
@@ -2700,7 +2713,11 @@ async function fetchJson(path, params = {}) {
     const timeout = window.setTimeout(() => controller.abort(), state.config.requestTimeoutMs);
 
     try {
-        const response = await fetch(url, { signal: controller.signal, credentials: "include" });
+        const response = await fetch(url, {
+            signal: controller.signal,
+            credentials: "include",
+            headers: { "X-Request-ID": requestId }
+        });
         const text = await response.text();
         let payload;
 
@@ -2711,16 +2728,16 @@ async function fetchJson(path, params = {}) {
         }
 
         if (!response.ok) {
-            throw new Error(formatProxyError(response.status, payload));
+            throw new Error(formatProxyError(response.status, payload, response.headers.get("X-Request-ID") || requestId));
         }
 
         return payload;
     } catch (error) {
         if (error.name === "AbortError") {
-            throw new Error("The Redmine request timed out.");
+            throw new Error(withRequestRef("The Redmine request timed out.", requestId));
         }
         if (error instanceof TypeError) {
-            throw new Error("Unable to reach the local proxy. Check that proxy.py is running.");
+            throw new Error(withRequestRef("Unable to reach the local proxy. Check that proxy.py is running.", requestId));
         }
         throw error;
     } finally {
@@ -2730,12 +2747,16 @@ async function fetchJson(path, params = {}) {
 
 async function apiJson(path, options = {}) {
     const url = new URL(`${state.config.proxyUrl}${path}`);
+    const requestId = createRequestId();
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), state.config.requestTimeoutMs);
     try {
         const response = await fetch(url, {
             method: options.method || "GET",
-            headers: options.body ? { "Content-Type": "application/json" } : {},
+            headers: {
+                ...(options.body ? { "Content-Type": "application/json" } : {}),
+                "X-Request-ID": requestId
+            },
             body: options.body ? JSON.stringify(options.body) : undefined,
             signal: controller.signal,
             credentials: "include"
@@ -2743,15 +2764,15 @@ async function apiJson(path, options = {}) {
         const text = await response.text();
         const payload = text ? JSON.parse(text) : {};
         if (!response.ok) {
-            throw new Error(formatProxyError(response.status, payload));
+            throw new Error(formatProxyError(response.status, payload, response.headers.get("X-Request-ID") || requestId));
         }
         return payload;
     } catch (error) {
         if (error.name === "AbortError") {
-            throw new Error("The backend request timed out.");
+            throw new Error(withRequestRef("The backend request timed out.", requestId));
         }
         if (error instanceof TypeError) {
-            throw new Error("Unable to reach the local backend.");
+            throw new Error(withRequestRef("Unable to reach the local backend.", requestId));
         }
         throw error;
     } finally {
@@ -2767,14 +2788,14 @@ function debounce(callback, wait) {
     };
 }
 
-function formatProxyError(status, payload) {
+function formatProxyError(status, payload, requestId = "") {
     if (status === 401 || status === 403) {
-        return "Redmine authentication or proxy authorization failed.";
+        return withRequestRef("Redmine authentication or proxy authorization failed.", requestId);
     }
     if (payload && payload.error) {
-        return payload.error;
+        return withRequestRef(payload.error, requestId);
     }
-    return `Redmine request failed with HTTP ${status}.`;
+    return withRequestRef(`Redmine request failed with HTTP ${status}.`, requestId);
 }
 
 function normalizeTimeEntry(entry, fallbackUserId) {

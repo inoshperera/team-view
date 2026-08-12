@@ -35,7 +35,8 @@ class TeamViewHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", origin or "*")
         self.send_header("Access-Control-Allow-Credentials", "true")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Request-ID")
+        self.send_header("Access-Control-Expose-Headers", "X-Request-ID")
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
@@ -500,8 +501,15 @@ class TeamViewHandler(BaseHTTPRequestHandler):
                 raise PermissionError("You do not have access to this team.")
             self.json(200, {"task": task, "audit": services.task_audit_history(DB, task_id)})
         elif len(parts) == 3 and method == "PATCH":
+            body = self.body_json()
+            LOGGER.info(
+                "task_update_request request_id=%s task_id=%s payload_keys=%s",
+                self.request_id,
+                task_id,
+                sorted(body.keys()),
+            )
             self.audit("task_update", user=user, outcome="attempt", task_id=task_id)
-            task = services.save_task(DB, db_user, self.body_json(), task_id)
+            task = services.save_task(DB, db_user, body, task_id)
             self.audit("task_update", user=user, outcome="success", task_id=task.get("id"), team_id=task.get("teamId"))
             self.json(200, {"task": task})
         elif len(parts) == 3 and method == "DELETE":
@@ -511,11 +519,20 @@ class TeamViewHandler(BaseHTTPRequestHandler):
             self.json(204, None)
         elif len(parts) == 4 and parts[3] == "link" and method == "POST":
             body = self.body_json()
+            link_value = body.get("redmineIssue") or body.get("value")
+            LOGGER.info(
+                "task_link_redmine_request request_id=%s task_id=%s link_guess=%s value_length=%s",
+                self.request_id,
+                task_id,
+                redmine_link_guess(link_value),
+                len(str(link_value or "")),
+            )
             self.audit("task_link_redmine", user=user, outcome="attempt", task_id=task_id)
-            task = services.link_task_to_ticket(DB, REDMINE, user.get("redmine_api_key"), db_user, task_id, body.get("redmineIssue") or body.get("value"))
+            task = services.link_task_to_ticket(DB, REDMINE, user.get("redmine_api_key"), db_user, task_id, link_value)
             self.audit("task_link_redmine", user=user, outcome="success", task_id=task.get("id"), redmine_issue_id=task.get("redmineIssueId"))
             self.json(200, {"task": task})
         elif len(parts) == 4 and parts[3] == "sync-redmine" and method == "POST":
+            LOGGER.info("task_sync_redmine_request request_id=%s task_id=%s", self.request_id, task_id)
             self.audit("task_sync_redmine", user=user, outcome="attempt", task_id=task_id)
             task = services.sync_linked_task(DB, REDMINE, user.get("redmine_api_key"), db_user, task_id)
             self.audit("task_sync_redmine", user=user, outcome="success", task_id=task.get("id"), redmine_issue_id=task.get("redmineIssueId"))
@@ -689,6 +706,19 @@ def redact_params(params):
         key: "[redacted]" if str(key).lower() in SENSITIVE_QUERY_KEYS else value
         for key, value in dict(params).items()
     }
+
+
+def redmine_link_guess(value):
+    text = str(value or "").strip().lower()
+    if not text:
+        return "empty"
+    if "versions/" in text or text.startswith(("version:", "v:")):
+        return "version"
+    if "issues/" in text or text.startswith("#") or text.isdigit():
+        return "issue"
+    if "-" in text and text.rsplit("-", 1)[-1].isdigit():
+        return "issue_key"
+    return "subject"
 
 
 if __name__ == "__main__":
