@@ -2,7 +2,7 @@ import json
 import logging
 import time
 import uuid
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from backend.config import load_config
@@ -679,7 +679,7 @@ def main():
     DB.initialize()
     services.ensure_planner_schema(DB)
     services.migrate_team_config(DB)
-    server = HTTPServer((CONFIG.host, CONFIG.port), TeamViewHandler)
+    server = ThreadingHTTPServer((CONFIG.host, CONFIG.port), TeamViewHandler)
     LOGGER.info("backend_ready routes=/api/auth/*,/api/tasks,/api/teams,/api/redmine/* passthrough=/time_entries.json,/users.json,/issues.json,/issues/{id}.json")
     server.serve_forever()
 

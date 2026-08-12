@@ -1618,11 +1618,7 @@ def normalize_redmine_version(db, redmine, api_key, version_id):
     ticket_ids = []
     project_id = ensure_project(db, version.get("project") or (issues[0].get("project") if issues else {}))
     for issue in issues:
-        issue_id = issue.get("id")
-        if issue_id:
-            detail = redmine.get(f"/issues/{int(issue_id)}.json", api_key, {"include": "children"})
-            issue = detail.get("issue") or issue
-        ticket = normalize_redmine_issue(db, issue, redmine, api_key)
+        ticket = normalize_redmine_issue(db, issue)
         ticket_ids.extend(ticket_subtree_ticket_ids(db, ticket["id"]))
         project_id = ticket.get("projectId") or project_id
 
