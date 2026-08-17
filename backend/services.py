@@ -1690,7 +1690,7 @@ def version_ticket_aggregate(db, ticket_ids):
     placeholders = ",".join(["%s"] * len(ticket_ids))
     rows = db.query(
         f"""
-        SELECT status_id, progress, start_date, due_date
+        SELECT status_id, progress, start_date, due_date, estimated_hours
         FROM redmine_tickets
         WHERE id IN ({placeholders}) AND link_type='issue'
         """,
@@ -1698,15 +1698,44 @@ def version_ticket_aggregate(db, ticket_ids):
     )
     if not rows:
         return {"statusId": "new", "progress": 0, "startDate": None, "dueDate": None}
-    progresses = [int(row.get("progress") or 0) for row in rows]
     start_dates = [row.get("start_date") for row in rows if row.get("start_date")]
     due_dates = [row.get("due_date") for row in rows if row.get("due_date")]
     return {
         "statusId": aggregate_version_status([row.get("status_id") for row in rows]),
-        "progress": int(round(sum(progresses) / len(progresses))),
+        "progress": redmine_version_completed_percent(rows),
         "startDate": min(start_dates) if start_dates else None,
         "dueDate": max(due_dates) if due_dates else None,
     }
+
+
+def redmine_version_completed_percent(rows):
+    # Mirrors Redmine's Version#completed_percent weighting for fixed issues.
+    issues_count = len(rows)
+    if not issues_count:
+        return 0
+    open_count = sum(1 for row in rows if str(row.get("status_id") or "") != "done")
+    if open_count == 0:
+        return 100
+
+    estimates = [float(row.get("estimated_hours") or 0) for row in rows if float(row.get("estimated_hours") or 0) > 0]
+    estimated_average = (sum(estimates) / len(estimates)) if estimates else 1.0
+    denominator = estimated_average * issues_count
+    if denominator <= 0:
+        return 0
+
+    done = 0.0
+    for row in rows:
+        estimate = float(row.get("estimated_hours") or 0)
+        if estimate <= 0:
+            estimate = estimated_average
+        done += estimate * version_issue_progress(row)
+    return max(0, min(100, int(done / denominator)))
+
+
+def version_issue_progress(row):
+    if str(row.get("status_id") or "") == "done":
+        return 100
+    return max(0, min(100, int(row.get("progress") or 0)))
 
 
 def map_status(name):
