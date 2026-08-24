@@ -1879,6 +1879,7 @@ def list_tasks(db, user, filters):
     args = []
     preferences = user_preferences(db, user["id"])
     hide_done = truthy(filters.get("hide_done")) if "hide_done" in filters else preferences["hideDoneTasks"]
+    member_id = filters.get("member_id")
     if hide_done:
         where.append("t.status_id<>'done'")
     if user["role"] in ("lead", "member"):
@@ -1892,9 +1893,23 @@ def list_tasks(db, user, filters):
     elif filters.get("team_id"):
         where.append("t.team_id=%s")
         args.append(filters["team_id"])
-    if filters.get("member_id"):
-        where.append("EXISTS (SELECT 1 FROM task_assignments ta WHERE ta.task_id=t.id AND ta.user_id=%s)")
-        args.append(filters["member_id"])
+    if member_id:
+        child_status_filter = "AND child.status_id<>'done'" if hide_done else ""
+        where.append(
+            f"""(
+                EXISTS (SELECT 1 FROM task_assignments ta WHERE ta.task_id=t.id AND ta.user_id=%s)
+                OR EXISTS (
+                    SELECT 1
+                    FROM tasks child
+                    JOIN task_assignments child_ta ON child_ta.task_id=child.id
+                    WHERE child.parent_task_id=t.id
+                      AND child.deleted_at IS NULL
+                      {child_status_filter}
+                      AND child_ta.user_id=%s
+                )
+            )"""
+        )
+        args.extend([member_id, member_id])
     raw_task_ids = str(filters.get("task_ids") or "").strip()
     task_ids = [int(value) for value in raw_task_ids.split(",") if str(value).isdigit()]
     if raw_task_ids:
@@ -1909,7 +1924,16 @@ def list_tasks(db, user, filters):
         where.append("t.parent_task_id=%s")
         args.append(filters["parent_task_id"])
     elif not task_ids and not truthy(filters.get("include_children")):
-        where.append("t.parent_task_id IS NULL")
+        if member_id:
+            where.append(
+                """(
+                    t.parent_task_id IS NULL
+                    OR EXISTS (SELECT 1 FROM task_assignments direct_ta WHERE direct_ta.task_id=t.id AND direct_ta.user_id=%s)
+                )"""
+            )
+            args.append(member_id)
+        else:
+            where.append("t.parent_task_id IS NULL")
     for key, column in (("category", "category_id"), ("priority", "priority_id"), ("status", "status_id")):
         if filters.get(key):
             where.append(f"t.{column}=%s")
