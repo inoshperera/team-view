@@ -3447,6 +3447,9 @@ function renderPlanner() {
         els.plannerBoard.classList.remove("is-list", "is-organization-list");
         els.plannerBoard.innerHTML = plannerLaneItems().map((lane) => {
             const laneTasks = tasks.filter((task) => task[plannerGroupField()] === lane.id);
+            if (!laneTasks.length && tasks.length) {
+                return "";
+            }
             return `
                 <section class="planner-lane ${escapeHtml(lane.colorClass || "")}" data-planner-lane="${escapeHtml(lane.id)}">
                     <div class="planner-lane-title">
@@ -3983,7 +3986,8 @@ function renderOrganizationPriorityLists(tasks) {
         .map((item) => ({
             item,
             tasks: organizationSortedTasks(tasks.filter((task) => task[groupKey] === item.id))
-        }));
+        }))
+        .filter((group) => group.tasks.length || tasks.length === 0);
     return grouped.map(({ item, tasks }) => `
         <section class="org-priority-section ${escapeHtml(item.colorClass || "")}" data-planner-drop-group="${escapeHtml(item.id)}">
             <div class="org-priority-title">
