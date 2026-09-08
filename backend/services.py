@@ -3,12 +3,14 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SYNCED_FIELDS = {"priorityId", "statusId", "progress", "startDate", "dueDate", "memberIds"}
+MIN_TASK_YEAR = 2020
+MAX_TASK_YEAR = 2100
 DEFAULT_TEAM_ID = "default_team"
 DEFAULT_TEAM_NAME = "Default team"
 LOGGER = logging.getLogger("team_view.services")
@@ -928,6 +930,40 @@ def ensure_planner_schema(db):
         db.execute("ALTER TABLE tasks ADD COLUMN parent_task_id BIGINT UNSIGNED NULL AFTER project_id")
         db.execute("ALTER TABLE tasks ADD KEY idx_tasks_parent (parent_task_id)")
         db.execute("ALTER TABLE tasks ADD CONSTRAINT fk_tasks_parent FOREIGN KEY (parent_task_id) REFERENCES tasks(id) ON DELETE SET NULL")
+    if "task_year" not in task_columns:
+        db.execute("ALTER TABLE tasks ADD COLUMN task_year SMALLINT UNSIGNED NULL AFTER due_date")
+        db.execute(
+            """
+            UPDATE tasks
+            SET task_year=YEAR(COALESCE(due_date, start_date, UTC_DATE()))
+            WHERE task_year IS NULL
+            """
+        )
+        db.execute("ALTER TABLE tasks MODIFY task_year SMALLINT UNSIGNED NOT NULL")
+        task_columns.add("task_year")
+    if "task_quarter" not in task_columns:
+        db.execute("ALTER TABLE tasks ADD COLUMN task_quarter TINYINT UNSIGNED NULL AFTER task_year")
+        db.execute(
+            """
+            UPDATE tasks
+            SET task_quarter=QUARTER(COALESCE(due_date, start_date, UTC_DATE()))
+            WHERE task_quarter IS NULL
+            """
+        )
+        db.execute("ALTER TABLE tasks MODIFY task_quarter TINYINT UNSIGNED NOT NULL")
+        task_columns.add("task_quarter")
+    task_indexes = {
+        row["INDEX_NAME"]
+        for row in db.query(
+            """
+            SELECT INDEX_NAME
+            FROM INFORMATION_SCHEMA.STATISTICS
+            WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tasks'
+            """
+        )
+    }
+    if "idx_tasks_period" not in task_indexes:
+        db.execute("ALTER TABLE tasks ADD KEY idx_tasks_period (task_year, task_quarter, deleted_at)")
 
     ticket_columns = {
         row["COLUMN_NAME"]
@@ -1938,6 +1974,14 @@ def list_tasks(db, user, filters):
         if filters.get(key):
             where.append(f"t.{column}=%s")
             args.append(filters[key])
+    year_filter = normalize_task_year(filters.get("year"), allow_blank=True)
+    if year_filter:
+        where.append("t.task_year=%s")
+        args.append(year_filter)
+    quarter_filter = normalize_task_quarter(filters.get("quarter"), allow_blank=True)
+    if quarter_filter:
+        where.append("t.task_quarter=%s")
+        args.append(quarter_filter)
     if filters.get("q"):
         where.append("(t.title LIKE %s OR t.description LIKE %s)")
         q = f"%{filters['q']}%"
@@ -1997,6 +2041,8 @@ def task_payload(db, row):
         "progress": int(row.get("progress") or 0),
         "startDate": date_value(row.get("start_date")),
         "dueDate": date_value(row.get("due_date")),
+        "year": int(row.get("task_year") or default_task_period()["year"]),
+        "quarter": int(row.get("task_quarter") or default_task_period()["quarter"]),
         "redmineTicketId": row.get("redmine_ticket_id"),
         "redmineLinkType": row.get("link_type") or "issue",
         "redmineIssueId": row.get("redmine_issue_id"),
@@ -2125,11 +2171,11 @@ def save_task(db, user, payload, task_id=None):
                 cursor.execute(
                     """
                     UPDATE tasks SET team_id=%s, project_id=%s, parent_task_id=%s, category_id=%s, priority_id=%s,
-                      title=%s, description=%s, updated_by_user_id=%s
+                      title=%s, description=%s, task_year=%s, task_quarter=%s, updated_by_user_id=%s
                     WHERE id=%s
                     """,
                     (data["teamId"], data["projectId"], data["parentTaskId"], data["categoryId"], data["priorityId"],
-                     data["title"], data["description"], user["id"], task_id),
+                     data["title"], data["description"], data["year"], data["quarter"], user["id"], task_id),
                 )
                 if not existing["redmineLinked"]:
                     cursor.execute(
@@ -2142,12 +2188,12 @@ def save_task(db, user, payload, task_id=None):
                 cursor.execute(
                     """
                     INSERT INTO tasks
-                      (team_id, project_id, parent_task_id, category_id, priority_id, status_id, title, description, progress, start_date, due_date, created_by_user_id, updated_by_user_id)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                      (team_id, project_id, parent_task_id, category_id, priority_id, status_id, title, description, progress, start_date, due_date, task_year, task_quarter, created_by_user_id, updated_by_user_id)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
                     (data["teamId"], data["projectId"], data["parentTaskId"], data["categoryId"], data["priorityId"],
                      data["statusId"], data["title"], data["description"], data["progress"],
-                     data["startDate"], data["dueDate"], user["id"], user["id"]),
+                     data["startDate"], data["dueDate"], data["year"], data["quarter"], user["id"], user["id"]),
                 )
                 task_id = cursor.lastrowid
                 parent_rollups.add(data["parentTaskId"])
@@ -2159,6 +2205,7 @@ def save_task(db, user, payload, task_id=None):
 
 
 def normalize_task_input(payload):
+    default_period = default_task_period(payload)
     return {
         "teamId": str(payload.get("teamId") or "").strip(),
         "projectId": int(payload["projectId"]) if payload.get("projectId") else None,
@@ -2171,8 +2218,56 @@ def normalize_task_input(payload):
         "progress": max(0, min(100, int(payload.get("progress") or 0))),
         "startDate": payload.get("startDate") or None,
         "dueDate": payload.get("dueDate") or None,
+        "year": normalize_task_year(payload.get("year")) or default_period["year"],
+        "quarter": normalize_task_quarter(payload.get("quarter")) or default_period["quarter"],
         "memberIds": [int(value) for value in payload.get("memberIds") or [] if str(value).isdigit()],
     }
+
+
+def default_task_period(payload=None):
+    payload = payload or {}
+    today = None
+    for key in ("dueDate", "startDate"):
+        raw = str(payload.get(key) or "").strip()
+        if not raw:
+            continue
+        try:
+            today = datetime.strptime(raw[:10], "%Y-%m-%d").date()
+            break
+        except ValueError:
+            continue
+    if today is None:
+        today = date.today()
+    return {"year": today.year, "quarter": ((today.month - 1) // 3) + 1}
+
+
+def normalize_task_year(value, allow_blank=False):
+    if value in (None, "") and allow_blank:
+        return None
+    try:
+        year = int(value)
+    except (TypeError, ValueError):
+        if allow_blank:
+            return None
+        raise ValueError("Task year must be a valid year.")
+    if year < MIN_TASK_YEAR or year > MAX_TASK_YEAR:
+        raise ValueError(f"Task year must be between {MIN_TASK_YEAR} and {MAX_TASK_YEAR}.")
+    return year
+
+
+def normalize_task_quarter(value, allow_blank=False):
+    if value in (None, "") and allow_blank:
+        return None
+    text = str(value or "").strip().upper().replace("Q", "")
+    try:
+        quarter = int(text)
+    except (TypeError, ValueError):
+        if allow_blank:
+            return None
+        raise ValueError("Task quarter must be Q1, Q2, Q3, or Q4.")
+    if quarter not in (1, 2, 3, 4):
+        raise ValueError("Task quarter must be Q1, Q2, Q3, or Q4.")
+    return quarter
 
 
 def can_mutate_team(db, user, team_id):
@@ -2243,6 +2338,8 @@ def task_audit_fields():
         ("progress", "Progress"),
         ("startDate", "Start date"),
         ("dueDate", "Due date"),
+        ("year", "Year"),
+        ("quarter", "Quarter"),
         ("memberIds", "Assigned members"),
     )
 
@@ -2258,6 +2355,8 @@ def audit_display_value(key, value):
         return ", ".join(str(item) for item in value) if value else "None"
     if key == "progress" and value not in (None, ""):
         return f"{value}%"
+    if key == "quarter" and value not in (None, ""):
+        return f"Q{value}"
     return str(value) if value not in (None, "") else "Not set"
 
 

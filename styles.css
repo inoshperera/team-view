@@ -1365,7 +1365,7 @@ h1 {
 
 .planner-controls {
     display: grid;
-    grid-template-columns: minmax(220px, 1.15fr) minmax(220px, 1.15fr) minmax(112px, 0.42fr) minmax(150px, 0.5fr) 42px minmax(170px, 0.7fr) minmax(170px, 0.7fr);
+    grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) minmax(112px, 0.45fr) minmax(140px, 0.55fr) 42px repeat(4, minmax(128px, 0.55fr));
     align-items: end;
     gap: 10px;
     margin-bottom: 18px;
@@ -1779,6 +1779,7 @@ h1 {
 .chip-ops { color: #0e7490; background: #e0f6fb; border-color: #a4dfeb; }
 .chip-hr { color: #6d5bd0; background: #f0edff; border-color: #d6cefb; }
 .chip-team { color: var(--muted); background: #eef2f7; }
+.chip-period { color: #0f5c84; background: #eef6ff; border-color: #b8dcf4; }
 .chip-synced { color: var(--accent); background: #e8efff; border-color: #bdd0ff; }
 
 .planner-task-card h2 {

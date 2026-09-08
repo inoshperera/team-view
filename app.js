@@ -47,6 +47,8 @@ const state = {
             category: "",
             priority: "",
             status: "",
+            year: "",
+            quarter: "",
             q: ""
         },
         advancedFiltersOpen: false,
@@ -151,6 +153,12 @@ const KNOWN_WORK_STATUSES = new Set([
 
 const EXCLUDED_WORK_STATUSES = new Set(["New", "Closed", "On hold", "Staged", "Testing Rejected"]);
 const NON_WORKING_COUNT_STATUSES = new Set(["New", "On hold"]);
+const QUARTER_OPTIONS = [
+    { id: 1, label: "Q1(Jan-March)" },
+    { id: 2, label: "Q2(Apr-June)" },
+    { id: 3, label: "Q3(July-September)" },
+    { id: 4, label: "Q4(Oct-December)" }
+];
 
 const els = {
     loginShell: document.getElementById("loginShell"),
@@ -206,6 +214,8 @@ const els = {
     plannerFilterButton: document.getElementById("plannerFilterButton"),
     plannerCategoryFilter: document.getElementById("plannerCategoryFilter"),
     plannerPriorityFilter: document.getElementById("plannerPriorityFilter"),
+    plannerYearFilter: document.getElementById("plannerYearFilter"),
+    plannerQuarterFilter: document.getElementById("plannerQuarterFilter"),
     plannerSearch: document.getElementById("plannerSearch"),
     plannerToggleRow: document.getElementById("plannerToggleRow"),
     plannerGroupSelect: document.getElementById("plannerGroupSelect"),
@@ -270,6 +280,8 @@ const els = {
     plannerTaskStart: document.getElementById("plannerTaskStart"),
     plannerTaskDueLabel: document.getElementById("plannerTaskDueLabel"),
     plannerTaskDue: document.getElementById("plannerTaskDue"),
+    plannerTaskYear: document.getElementById("plannerTaskYear"),
+    plannerTaskQuarter: document.getElementById("plannerTaskQuarter"),
     plannerSyncedPanel: document.getElementById("plannerSyncedPanel"),
     plannerTaskMembers: document.getElementById("plannerTaskMembers"),
     plannerTaskViewModal: document.getElementById("plannerTaskViewModal"),
@@ -555,6 +567,8 @@ function bindEvents() {
     els.plannerFilterButton.addEventListener("click", togglePlannerAdvancedFilters);
     els.plannerCategoryFilter.addEventListener("change", () => updatePlannerFilter("category", els.plannerCategoryFilter.value));
     els.plannerPriorityFilter.addEventListener("change", () => updatePlannerFilter("priority", els.plannerPriorityFilter.value));
+    els.plannerYearFilter.addEventListener("change", () => updatePlannerFilter("year", els.plannerYearFilter.value));
+    els.plannerQuarterFilter.addEventListener("change", () => updatePlannerFilter("quarter", els.plannerQuarterFilter.value));
     els.plannerSearch.addEventListener("input", () => updatePlannerFilter("q", els.plannerSearch.value));
     els.plannerGroupSelect?.addEventListener("change", () => setPlannerGroup(els.plannerGroupSelect.value));
     document.querySelectorAll("[data-planner-drilldown]").forEach((button) => {
@@ -806,8 +820,8 @@ function syncPlannerControls() {
     }).join("")}<option value="">All team level</option>`;
     els.plannerTeamFilter.value = state.planner.filters.teamId;
     els.plannerMemberField.classList.toggle("is-hidden", isOrganizationScope);
-    els.plannerFilterButton.classList.toggle("is-hidden", isOrganizationScope);
-    els.plannerToggleRow.classList.toggle("is-hidden", isOrganizationScope);
+    els.plannerFilterButton.classList.remove("is-hidden");
+    els.plannerToggleRow.classList.remove("is-hidden");
     els.plannerListViewToggle.value = state.planner.listView ? "list" : "board";
     const menuHideDone = document.getElementById("userMenuHideDoneTasks");
     if (menuHideDone) {
@@ -821,12 +835,16 @@ function syncPlannerControls() {
     els.plannerCategoryFilter.value = state.planner.filters.category;
     els.plannerPriorityFilter.innerHTML = `<option value="">All priorities</option>${state.planner.priorities.map((item) => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("")}`;
     els.plannerPriorityFilter.value = state.planner.filters.priority;
+    els.plannerYearFilter.innerHTML = `<option value="">All years</option>${plannerYearOptions().map((year) => `<option value="${year}">${year}</option>`).join("")}`;
+    els.plannerYearFilter.value = state.planner.filters.year;
+    els.plannerQuarterFilter.innerHTML = `<option value="">All quarters</option>${QUARTER_OPTIONS.map((quarter) => `<option value="${quarter.id}">${escapeHtml(quarter.label)}</option>`).join("")}`;
+    els.plannerQuarterFilter.value = state.planner.filters.quarter;
     els.plannerSearch.value = state.planner.filters.q;
     if (els.plannerGroupSelect) {
         els.plannerGroupSelect.value = state.planner.groupMode;
     }
-    const hasAdvancedFilters = Boolean(state.planner.filters.category || state.planner.filters.priority || state.planner.filters.q);
-    const showAdvanced = !isOrganizationScope && (state.planner.advancedFiltersOpen || hasAdvancedFilters);
+    const hasAdvancedFilters = Boolean(state.planner.filters.category || state.planner.filters.priority || state.planner.filters.year || state.planner.filters.quarter || state.planner.filters.q);
+    const showAdvanced = state.planner.advancedFiltersOpen || hasAdvancedFilters;
     els.plannerFilterButton.classList.toggle("is-selected", showAdvanced);
     els.plannerFilterButton.setAttribute("aria-expanded", showAdvanced ? "true" : "false");
     document.querySelectorAll(".planner-advanced-filter").forEach((field) => {
@@ -907,6 +925,43 @@ function defaultWorkTeamId(preferredTeamId = "") {
     return teamOptionItems(state.teams).find(({ team }) => !isRootWorkTeam(team.id))?.team.id || state.teams[0]?.id || "";
 }
 
+function currentTaskPeriod() {
+    const today = new Date();
+    return {
+        year: today.getFullYear(),
+        quarter: Math.floor(today.getMonth() / 3) + 1
+    };
+}
+
+function plannerYearOptions(extraYears = []) {
+    const currentYear = currentTaskPeriod().year;
+    const years = new Set();
+    for (let year = currentYear - 2; year <= currentYear + 2; year += 1) {
+        years.add(year);
+    }
+    state.planner.tasks.forEach((task) => {
+        const year = Number(task.year);
+        if (Number.isInteger(year)) {
+            years.add(year);
+        }
+    });
+    extraYears.forEach((value) => {
+        const year = Number(value);
+        if (Number.isInteger(year)) {
+            years.add(year);
+        }
+    });
+    if (state.planner.filters.year) {
+        years.add(Number(state.planner.filters.year));
+    }
+    return [...years].filter((year) => Number.isInteger(year)).sort((a, b) => a - b);
+}
+
+function quarterLabel(value) {
+    const quarter = QUARTER_OPTIONS.find((item) => Number(item.id) === Number(value));
+    return quarter?.label || (value ? `Q${value}` : "Not set");
+}
+
 function updatePlannerFilter(key, value) {
     state.planner.filters[key] = value;
     if (state.planner.drilldown === "warning") {
@@ -915,16 +970,6 @@ function updatePlannerFilter(key, value) {
     }
     if (key === "teamId") {
         state.planner.filters.memberId = "";
-        if (isRootPlannerTeam(value)) {
-            state.planner.filters.category = "";
-            state.planner.filters.priority = "";
-            state.planner.filters.q = "";
-            state.planner.advancedFiltersOpen = false;
-            state.planner.groupMode = "priority";
-            state.planner.drilldown = "";
-            state.planner.nonePriorityFirst = false;
-            state.planner.warningDrilldown = null;
-        }
     }
     syncPlannerControls();
     refreshPlanner();
@@ -934,6 +979,8 @@ function togglePlannerAdvancedFilters() {
     if (state.planner.advancedFiltersOpen) {
         state.planner.filters.category = "";
         state.planner.filters.priority = "";
+        state.planner.filters.year = "";
+        state.planner.filters.quarter = "";
         state.planner.filters.q = "";
         state.planner.advancedFiltersOpen = false;
         syncPlannerControls();
@@ -3704,6 +3751,7 @@ async function movePlannerTaskToGroup(task, groupId) {
 }
 
 function plannerTaskPatchBody(task) {
+    const defaultPeriod = currentTaskPeriod();
     return {
         teamId: task.teamId,
         projectId: task.projectId || null,
@@ -3716,6 +3764,8 @@ function plannerTaskPatchBody(task) {
         progress: clampProgress(task.progress),
         startDate: task.startDate || "",
         dueDate: task.dueDate || "",
+        year: task.year || defaultPeriod.year,
+        quarter: task.quarter || defaultPeriod.quarter,
         memberIds: task.memberIds || (task.members || []).map((member) => member.id)
     };
 }
@@ -3877,6 +3927,12 @@ function plannerLaneItems() {
     if (state.planner.groupMode === "status") {
         return state.planner.statuses;
     }
+    if (state.planner.groupMode === "year") {
+        return plannerYearOptions().map((year) => ({ id: year, label: String(year), colorClass: "" }));
+    }
+    if (state.planner.groupMode === "quarter") {
+        return QUARTER_OPTIONS.map((quarter) => ({ id: quarter.id, label: quarter.label, colorClass: "" }));
+    }
     return state.planner.priorities.filter((priority) => priority.id !== "none");
 }
 
@@ -3886,6 +3942,12 @@ function plannerGroupField() {
     }
     if (state.planner.groupMode === "status") {
         return "statusId";
+    }
+    if (state.planner.groupMode === "year") {
+        return "year";
+    }
+    if (state.planner.groupMode === "quarter") {
+        return "quarter";
     }
     return "priorityId";
 }
@@ -3977,6 +4039,7 @@ function renderOrganizationTaskRow(task) {
                <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
            </span>`
         : "";
+    const periodChip = `<span class="planner-chip chip-period">${escapeHtml(`${task.year || "No year"} · ${quarterLabel(task.quarter)}`)}</span>`;
     return `
         <div class="org-task-group ${isExpanded ? "is-expanded" : ""}">
             <article class="org-task-row ${escapeHtml(priority?.colorClass || "")}" draggable="true" data-planner-drag-task="${escapeHtml(task.id)}" data-org-expand="${escapeHtml(task.id)}">
@@ -3984,6 +4047,7 @@ function renderOrganizationTaskRow(task) {
                     <div class="planner-chip-row">
                         <span class="planner-chip ${escapeHtml(category?.colorClass || "")}">${escapeHtml(category?.label || task.categoryId)}</span>
                         ${showTeamChip ? `<span class="planner-chip chip-team">${escapeHtml(team.name)}</span>` : ""}
+                        ${periodChip}
                         ${linkedChip}
                         <span class="status-pill ${escapeHtml(status?.colorClass || "")}">${escapeHtml(status?.label || task.statusId)}</span>
                     </div>
@@ -4026,6 +4090,7 @@ function renderOrganizationChildTaskRow(task) {
                 <div class="planner-chip-row">
                     ${team ? `<span class="planner-chip chip-team">${escapeHtml(team.name)}</span>` : ""}
                     <span class="planner-chip ${escapeHtml(category?.colorClass || "")}">${escapeHtml(category?.label || task.categoryId)}</span>
+                    <span class="planner-chip chip-period">${escapeHtml(`${task.year || "No year"} · ${quarterLabel(task.quarter)}`)}</span>
                     <span class="status-pill ${escapeHtml(status?.colorClass || "")}">${escapeHtml(status?.label || task.statusId)}</span>
                 </div>
                 <h3>${escapeHtml(task.title)}</h3>
@@ -4064,12 +4129,14 @@ function renderPlannerTaskCard(task) {
                <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
            </span>`
         : "";
+    const periodLabel = `${task.year || "No year"} · ${quarterLabel(task.quarter)}`;
     return `
         <article class="planner-task-card ${escapeHtml(priority?.colorClass || "")}" draggable="true" data-planner-drag-task="${escapeHtml(task.id)}">
             <div class="planner-task-head">
                 <div class="planner-chip-row">
                     <span class="planner-chip ${escapeHtml(category?.colorClass || "")}">${escapeHtml(category?.label || task.categoryId)}</span>
                     ${team ? `<span class="planner-chip chip-team">${escapeHtml(team.name)}</span>` : ""}
+                    <span class="planner-chip chip-period">${escapeHtml(periodLabel)}</span>
                     ${linkedChip}
                     <span class="status-pill ${escapeHtml(status?.colorClass || "")}">${escapeHtml(status?.label || task.statusId)}</span>
                 </div>
@@ -4079,6 +4146,7 @@ function renderPlannerTaskCard(task) {
             <div class="planner-card-grid">
                 <div><span>Project</span><strong>${escapeHtml(task.projectName || "Not set")}</strong></div>
                 <div><span>Priority</span><strong class="priority-val"><span class="priority-dot ${escapeHtml(priority?.colorClass || "")}"></span>${escapeHtml(priorityLabel)}</strong></div>
+                <div><span>Period</span><strong>${escapeHtml(periodLabel)}</strong></div>
                 <div><span>Due</span><strong class="${due.className}">${escapeHtml(task.dueDate || "Not set")}</strong><small>${escapeHtml(due.label)}</small></div>
                 ${progressMarkup}
             </div>
@@ -4164,6 +4232,8 @@ function renderPlannerTaskView(task, auditRows) {
             <div><span>Category</span><strong>${escapeHtml(category?.label || task.categoryId || "Not set")}</strong></div>
             <div><span>Priority</span><strong>${escapeHtml(priority?.label || task.priorityId || "Not set")}</strong></div>
             <div><span>Status</span><strong>${escapeHtml(status?.label || task.statusId || "Not set")}</strong></div>
+            <div><span>Year</span><strong>${escapeHtml(task.year || "Not set")}</strong></div>
+            <div><span>Quarter</span><strong>${escapeHtml(quarterLabel(task.quarter))}</strong></div>
             <div><span>Progress</span><strong>${clampProgress(task.progress)}%</strong></div>
             <div><span>Due</span><strong class="${due.className}">${escapeHtml(task.dueDate || due.label)}</strong></div>
         </div>
@@ -4772,6 +4842,9 @@ async function openPlannerEditor(task, options = {}) {
     renderPlannerMemberPicker(task?.memberIds || []);
     els.plannerTaskError.classList.add("is-hidden");
     els.plannerTaskModal.classList.remove("is-hidden");
+    const defaultPeriod = currentTaskPeriod();
+    els.plannerTaskYear.value = task?.year || defaultPeriod.year;
+    els.plannerTaskQuarter.value = task?.quarter || defaultPeriod.quarter;
     if (task?.redmineLinked) {
         await refreshOpenPlannerEditorLinkedTask(task.id);
     } else {
@@ -4797,6 +4870,8 @@ function fillPlannerEditorOptions(task) {
     renderPlannerChoiceGroup("category");
     renderPlannerChoiceGroup("priority");
     els.plannerTaskStatus.innerHTML = state.planner.statuses.map((item) => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("");
+    els.plannerTaskYear.innerHTML = plannerYearOptions([task?.year]).map((year) => `<option value="${year}">${year}</option>`).join("");
+    els.plannerTaskQuarter.innerHTML = QUARTER_OPTIONS.map((quarter) => `<option value="${quarter.id}">${escapeHtml(quarter.label)}</option>`).join("");
 }
 
 function updatePlannerDueRequirement() {
@@ -5252,6 +5327,8 @@ async function savePlannerTask(event) {
         progress: clampProgress(els.plannerTaskProgress.value),
         startDate: els.plannerTaskStart.value,
         dueDate: els.plannerTaskDue.value,
+        year: Number(els.plannerTaskYear.value),
+        quarter: Number(els.plannerTaskQuarter.value),
         memberIds
     };
     try {

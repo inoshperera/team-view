@@ -6,9 +6,9 @@
     <title>Birdseye</title>
     <link rel="icon" href="assets/entgra-mark.jpeg">
     <link rel="apple-touch-icon" href="assets/entgra-mark.jpeg">
-    <link rel="stylesheet" href="styles.css?v=planner-5">
+    <link rel="stylesheet" href="styles.css?v=planner-6">
     <script src="config.example.js?v=planner-1"></script>
-    <script type="module" src="app.js?v=planner-5"></script>
+    <script type="module" src="app.js?v=planner-6"></script>
 </head>
 <body>
     <section class="login-shell is-hidden" id="loginShell" aria-labelledby="loginTitle">
@@ -158,6 +158,8 @@
                     <option value="priority">Priority</option>
                     <option value="status">Status</option>
                     <option value="category">Category</option>
+                    <option value="year">Year</option>
+                    <option value="quarter">Quarter</option>
                 </select>
             </label>
             <button class="secondary-button planner-filter-button" id="plannerFilterButton" type="button" aria-expanded="false" title="Add filters" aria-label="Add filters">
@@ -170,6 +172,14 @@
             <label class="field planner-advanced-filter">
                 <span>Priority</span>
                 <select id="plannerPriorityFilter"></select>
+            </label>
+            <label class="field planner-advanced-filter">
+                <span>Year</span>
+                <select id="plannerYearFilter"></select>
+            </label>
+            <label class="field planner-advanced-filter">
+                <span>Quarter</span>
+                <select id="plannerQuarterFilter"></select>
             </label>
             <label class="field planner-advanced-filter">
                 <span>Search</span>
@@ -324,6 +334,14 @@
                     <label class="field synced-hideable" id="dueFieldWrap">
                         <span id="plannerTaskDueLabel">Due date *</span>
                         <input id="plannerTaskDue" type="date" required>
+                    </label>
+                    <label class="field" id="plannerTaskYearWrap">
+                        <span>Year</span>
+                        <select id="plannerTaskYear"></select>
+                    </label>
+                    <label class="field" id="plannerTaskQuarterWrap">
+                        <span>Quarter</span>
+                        <select id="plannerTaskQuarter"></select>
                     </label>
                     <div class="planner-synced-panel is-hidden full" id="plannerSyncedPanel"></div>
                     <div class="field full" id="membersFieldWrap">
