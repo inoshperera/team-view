@@ -363,6 +363,26 @@ Nginx, and Certbot. It is safe to rerun if setup fails partway through.
 The current certificate was created using manual DNS validation because port 80
 is blocked.
 
+Current known certificate state:
+
+- Renewed manually on 2026-08-24.
+- Current expiry: 2026-11-22 04:50:59 UTC
+  (2026-11-22 10:20:59 Asia/Colombo).
+- A Codex reminder was prepared for 2026-11-15 09:00 Asia/Colombo to email
+  `inosh@entgra.io` from the connected `inoshagent@gmail.com` account.
+
+August 2026 incident notes:
+
+- The previous certificate expired on 2026-08-17 09:35:07 UTC.
+- `certbot-renew.timer` was enabled, but every unattended renewal failed because
+  the renewal config uses `authenticator = manual`.
+- The observed failure was:
+  `An authentication script must be provided with --manual-auth-hook when using
+  the manual plugin non-interactively.`
+- There were stale `_acme-challenge.birdseye.entgra.net` TXT records in GoDaddy.
+  Stale TXT records do not renew the certificate; every Certbot attempt
+  generates a fresh TXT value.
+
 Manual issue/renew:
 
 ```bash
@@ -371,7 +391,8 @@ sudo certbot certonly --manual \
   -d birdseye.entgra.net \
   -m inosh@entgra.io \
   --agree-tos \
-  --no-eff-email
+  --no-eff-email \
+  --force-renewal
 ```
 
 Certbot will ask for a TXT record:
@@ -386,11 +407,16 @@ Add/update that TXT record in GoDaddy. Before pressing Enter in Certbot, verify:
 dig TXT _acme-challenge.birdseye.entgra.net +short
 ```
 
-Install the cert into Nginx:
+Multiple TXT values are acceptable if the fresh value from the current Certbot
+attempt is present. After Certbot succeeds, reload Nginx because the Nginx config
+already points at the live Certbot paths:
 
 ```bash
-sudo certbot install --nginx -d birdseye.entgra.net
+sudo nginx -t
 sudo systemctl reload nginx
+sudo certbot certificates
+echo | openssl s_client -servername birdseye.entgra.net -connect 127.0.0.1:443 2>/dev/null | openssl x509 -noout -subject -issuer -dates
+curl -Ik https://birdseye.entgra.net
 ```
 
 The `certbot-renew.timer` may be enabled, but unattended renewal will fail for a

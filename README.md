@@ -100,7 +100,8 @@ window.TEAM_ACTIVITY_CONFIG = {
     activeWindowMinutes: 90,
     recentWindowMinutes: 240,
     longEntryHours: 8,
-    requestTimeoutMs: 12000,
+    requestTimeoutMs: 60000,
+    redmineMutationTimeoutMs: 900000,
     team: [
         { id: 14, name: "Arshana" }
     ],

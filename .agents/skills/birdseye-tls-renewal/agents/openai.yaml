@@ -1,0 +1,4 @@
+interface:
+  display_name: "Birdseye TLS Renewal"
+  short_description: "Renew Birdseye TLS certificates"
+  default_prompt: "Use $birdseye-tls-renewal to renew the Birdseye production TLS certificate."

@@ -3,7 +3,8 @@ const DEFAULT_CONFIG = {
     activeWindowMinutes: 90,
     recentWindowMinutes: 240,
     longEntryHours: 8,
-    requestTimeoutMs: 12000,
+    requestTimeoutMs: 60000,
+    redmineMutationTimeoutMs: 900000,
     team: [],
     teams: []
 };
@@ -447,6 +448,7 @@ function normalizeConfig(input) {
         recentWindowMinutes: Number(input.recentWindowMinutes || DEFAULT_CONFIG.recentWindowMinutes),
         longEntryHours: Number(input.longEntryHours || DEFAULT_CONFIG.longEntryHours),
         requestTimeoutMs: Number(input.requestTimeoutMs || DEFAULT_CONFIG.requestTimeoutMs),
+        redmineMutationTimeoutMs: Number(input.redmineMutationTimeoutMs || DEFAULT_CONFIG.redmineMutationTimeoutMs),
         team: Array.isArray(input.team) ? input.team : [],
         teams: Array.isArray(input.teams) ? input.teams : []
     };
@@ -784,7 +786,7 @@ async function syncPlannerWithRedmine() {
     renderPlannerRedmineSyncButton();
     renderRefreshState();
     try {
-        const result = await apiJson("/api/sync/redmine", { method: "POST" });
+        const result = await apiJson("/api/sync/redmine", { method: "POST", timeoutMs: state.config.redmineMutationTimeoutMs });
         await refreshPlanner();
         setRefreshState("success", `Redmine sync complete. ${Number(result.count || 0)} linked task${Number(result.count || 0) === 1 ? "" : "s"} refreshed.`);
     } catch (error) {
@@ -2811,7 +2813,8 @@ async function apiJson(path, options = {}) {
     const url = new URL(`${state.config.proxyUrl}${path}`);
     const requestId = createRequestId();
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), state.config.requestTimeoutMs);
+    const timeoutMs = Number(options.timeoutMs || state.config.requestTimeoutMs);
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
         const response = await fetch(url, {
             method: options.method || "GET",
@@ -3796,7 +3799,10 @@ async function syncPlannerTaskFromRedmine(taskId, options = {}) {
         }
     }
     try {
-        const payload = await apiJson(`/api/tasks/${encodeURIComponent(id)}/sync-redmine`, { method: "POST" });
+        const payload = await apiJson(`/api/tasks/${encodeURIComponent(id)}/sync-redmine`, {
+            method: "POST",
+            timeoutMs: state.config.redmineMutationTimeoutMs
+        });
         const task = payload.task;
         upsertPlannerTaskInState(task);
         return task;
@@ -4188,7 +4194,10 @@ async function refreshPlannerTaskViewLinkedTask(taskId, auditRows = []) {
         renderPlannerTaskView(currentTask, auditRows);
     }
     try {
-        const payload = await apiJson(`/api/tasks/${encodeURIComponent(taskId)}/sync-redmine`, { method: "POST" });
+        const payload = await apiJson(`/api/tasks/${encodeURIComponent(taskId)}/sync-redmine`, {
+            method: "POST",
+            timeoutMs: state.config.redmineMutationTimeoutMs
+        });
         upsertPlannerTaskInState(payload.task);
         const nextPayload = await apiJson(`/api/tasks/${encodeURIComponent(taskId)}/audit`);
         if (String(state.planner.viewingTaskId || "") === String(taskId)) {
@@ -4924,7 +4933,10 @@ async function refreshOpenPlannerEditorLinkedTask(taskId, options = {}) {
     renderPlannerSyncedPanel();
     renderPlannerMemberPicker(state.planner.linkedTicket?.memberIds || state.planner.editorTask.memberIds || []);
     try {
-        const payload = await apiJson(`/api/tasks/${encodeURIComponent(taskId)}/sync-redmine`, { method: "POST" });
+        const payload = await apiJson(`/api/tasks/${encodeURIComponent(taskId)}/sync-redmine`, {
+            method: "POST",
+            timeoutMs: state.config.redmineMutationTimeoutMs
+        });
         const task = payload.task;
         upsertPlannerTaskInState(task);
         applySyncedTaskToPlannerEditor(task);
@@ -5252,7 +5264,11 @@ async function savePlannerTask(event) {
         });
         const linkValue = els.plannerTaskRedmineSearch.value.trim();
         if (linkValue && (!task?.redmineLinked || linkValue !== task.issueKey)) {
-            await apiJson(`/api/tasks/${saved.task.id}/link`, { method: "POST", body: { value: linkValue } });
+            await apiJson(`/api/tasks/${saved.task.id}/link`, {
+                method: "POST",
+                body: { value: linkValue },
+                timeoutMs: state.config.redmineMutationTimeoutMs
+            });
         }
         closePlannerEditor();
         await refreshPlannerAfterTaskMutation(body.parentTaskId);
