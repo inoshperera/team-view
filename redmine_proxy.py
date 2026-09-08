@@ -216,6 +216,11 @@ class TeamViewHandler(BaseHTTPRequestHandler):
                 self.authorize_team_mutation(db_user, (self.body_json() or {}).get("teamId"))
                 return
             raise ApiError("Unsupported method.", 405)
+        if path == "/api/tasks/reorder":
+            self.require_method(method, "POST")
+            if db_user["role"] == "member":
+                raise PermissionError("You do not have permission to reorder tasks.")
+            return
         if path.startswith("/api/teams/"):
             self.authorize_team_api_call(db_user, method, path)
             return
@@ -422,6 +427,11 @@ class TeamViewHandler(BaseHTTPRequestHandler):
             task = services.save_task(DB, self.db_user(user), self.body_json())
             self.audit("task_create", user=user, outcome="success", task_id=task.get("id"), team_id=task.get("teamId"))
             self.json(201, {"task": task})
+        elif path == "/api/tasks/reorder" and method == "POST":
+            self.audit("task_reorder", user=user, outcome="attempt")
+            result = services.reorder_tasks_in_group(DB, self.db_user(user), self.body_json())
+            self.audit("task_reorder", user=user, outcome="success", group_by=result.get("groupBy"), group_value=result.get("groupValue"), task_count=len(result.get("taskIds") or []))
+            self.json(200, result)
         elif path.startswith("/api/tasks/"):
             self.handle_task_route(method, path, user)
         elif path == "/api/redmine/recent-tickets" and method == "GET":

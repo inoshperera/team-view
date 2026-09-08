@@ -777,6 +777,7 @@ async function refreshPlanner() {
         const mapped = key === "teamId" ? "team_id" : key === "memberId" ? "member_id" : key;
         params.set(mapped, value);
     });
+    params.set("group_by", state.planner.groupMode);
     params.set("hide_done", state.planner.preferences.hideDoneTasks ? "1" : "0");
     setRefreshState("loading", "Loading high-level tasks.");
     render();
@@ -1000,7 +1001,7 @@ function togglePlannerListView() {
 function setPlannerGroup(groupMode) {
     state.planner.groupMode = groupMode;
     syncPlannerControls();
-    renderPlanner();
+    refreshPlanner();
 }
 
 async function handlePlannerHideDoneChange() {
@@ -3553,6 +3554,10 @@ function applyPlannerDrilldown(tasks) {
 
 function plannerSortTasks(tasks) {
     return [...tasks].sort((a, b) => {
+        const manualOrder = comparePlannerManualOrder(a, b);
+        if (manualOrder !== 0) {
+            return manualOrder;
+        }
         const dueA = a.dueDate || "9999-12-31";
         const dueB = b.dueDate || "9999-12-31";
         if (dueA !== dueB) {
@@ -3676,13 +3681,24 @@ async function handlePlannerDrop(event) {
     const group = plannerDropGroupFromEvent(event);
     const groupId = list?.dataset.plannerDropList || group?.dataset.plannerDropGroup || group?.dataset.plannerLane;
     const task = findPlannerTaskById(state.planner.drag.taskId);
-    clearPlannerDropState();
     if (!task || !groupId) {
+        clearPlannerDropState();
         return;
     }
+    const orderedTaskIds = plannerTaskIdsForDropList(list, task.id);
     try {
-        await movePlannerTaskToGroup(task, groupId);
+        const field = plannerGroupField();
+        const groupChanged = String(task[field] || "") !== String(groupId);
+        if (groupChanged) {
+            await movePlannerTaskToGroup(task, groupId, { refresh: false });
+        } else {
+            els.plannerBoard.querySelector(`[data-planner-drag-task="${CSS.escape(String(task.id))}"]`)?.classList.add("is-saving");
+        }
+        await savePlannerGroupOrder(groupId, orderedTaskIds);
+        clearPlannerDropState();
+        await refreshPlannerAfterTaskMutation(task.parentTaskId);
     } catch (error) {
+        clearPlannerDropState();
         alert(error.message || "Failed to move task.");
         await refreshPlanner();
     }
@@ -3734,13 +3750,37 @@ function positionPlannerDropPlaceholder(list, clientY) {
     }
 }
 
+function plannerTaskIdsForDropList(list, draggedTaskId) {
+    const draggedId = String(draggedTaskId || "");
+    const ordered = [];
+    let inserted = false;
+    [...(list?.children || [])].forEach((child) => {
+        if (child.classList.contains("planner-drop-placeholder")) {
+            ordered.push(draggedId);
+            inserted = true;
+            return;
+        }
+        const item = child.matches?.("[data-planner-drag-task]")
+            ? child
+            : child.querySelector?.("[data-planner-drag-task]");
+        const taskId = item?.dataset?.plannerDragTask;
+        if (taskId && String(taskId) !== draggedId) {
+            ordered.push(String(taskId));
+        }
+    });
+    if (!inserted && draggedId) {
+        ordered.push(draggedId);
+    }
+    return ordered;
+}
+
 function clearPlannerDropState() {
     els.plannerBoard.querySelectorAll(".is-drag-over").forEach((item) => item.classList.remove("is-drag-over"));
     els.plannerBoard.querySelectorAll(".org-task-group.is-dragging").forEach((item) => item.classList.remove("is-dragging"));
     els.plannerBoard.querySelector(".planner-drop-placeholder")?.remove();
 }
 
-async function movePlannerTaskToGroup(task, groupId) {
+async function movePlannerTaskToGroup(task, groupId, options = {}) {
     const field = plannerGroupField();
     if (String(task[field] || "") === String(groupId)) {
         return;
@@ -3750,7 +3790,24 @@ async function movePlannerTaskToGroup(task, groupId) {
     const taskRow = els.plannerBoard.querySelector(`[data-planner-drag-task="${CSS.escape(String(task.id))}"]`);
     taskRow?.classList.add("is-saving");
     await apiJson(`/api/tasks/${task.id}`, { method: "PATCH", body });
-    await refreshPlannerAfterTaskMutation(task.parentTaskId);
+    if (options.refresh !== false) {
+        await refreshPlannerAfterTaskMutation(task.parentTaskId);
+    }
+}
+
+async function savePlannerGroupOrder(groupId, taskIds) {
+    const ids = (taskIds || []).filter(Boolean);
+    if (!groupId || ids.length === 0) {
+        return;
+    }
+    await apiJson("/api/tasks/reorder", {
+        method: "POST",
+        body: {
+            groupBy: state.planner.groupMode,
+            groupValue: String(groupId),
+            taskIds: ids
+        }
+    });
 }
 
 function plannerTaskPatchBody(task) {
@@ -3972,12 +4029,30 @@ function isRootWorkTeam(teamId) {
 function organizationSortedTasks(tasks) {
     const priorityOrder = new Map(state.planner.priorities.map((priority, index) => [priority.id, index]));
     return [...tasks].sort((a, b) => {
+        const manualOrder = comparePlannerManualOrder(a, b);
+        if (manualOrder !== 0) {
+            return manualOrder;
+        }
         const byPriority = (priorityOrder.get(a.priorityId) ?? 999) - (priorityOrder.get(b.priorityId) ?? 999);
         if (byPriority !== 0) {
             return byPriority;
         }
         return String(a.dueDate || "9999-99-99").localeCompare(String(b.dueDate || "9999-99-99"));
     });
+}
+
+function comparePlannerManualOrder(a, b) {
+    const orderA = Number(a.sortOrder);
+    const orderB = Number(b.sortOrder);
+    const hasA = a.sortOrder !== null && a.sortOrder !== undefined && Number.isFinite(orderA);
+    const hasB = b.sortOrder !== null && b.sortOrder !== undefined && Number.isFinite(orderB);
+    if (hasA && hasB && orderA !== orderB) {
+        return orderA - orderB;
+    }
+    if (hasA !== hasB) {
+        return hasA ? -1 : 1;
+    }
+    return 0;
 }
 
 function renderOrganizationPriorityLists(tasks) {

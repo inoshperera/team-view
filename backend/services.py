@@ -964,6 +964,23 @@ def ensure_planner_schema(db):
     }
     if "idx_tasks_period" not in task_indexes:
         db.execute("ALTER TABLE tasks ADD KEY idx_tasks_period (task_year, task_quarter, deleted_at)")
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_group_orders (
+          group_criterion VARCHAR(32) NOT NULL,
+          group_value VARCHAR(64) NOT NULL,
+          task_id BIGINT UNSIGNED NOT NULL,
+          sort_order INT NOT NULL DEFAULT 0,
+          updated_by_user_id BIGINT UNSIGNED NULL,
+          updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (group_criterion, group_value, task_id),
+          KEY idx_tgo_task (task_id),
+          KEY idx_tgo_lookup (group_criterion, group_value, sort_order),
+          CONSTRAINT fk_tgo_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+          CONSTRAINT fk_tgo_updated FOREIGN KEY (updated_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
+    )
 
     ticket_columns = {
         row["COLUMN_NAME"]
@@ -1910,9 +1927,34 @@ def date_value(value):
     return value.isoformat() if hasattr(value, "isoformat") else (value or "")
 
 
+TASK_GROUP_COLUMNS = {
+    "category": ("category_id", "categoryId"),
+    "priority": ("priority_id", "priorityId"),
+    "status": ("status_id", "statusId"),
+    "year": ("task_year", "year"),
+    "quarter": ("task_quarter", "quarter"),
+}
+
+
+def normalize_task_group_criterion(value):
+    criterion = str(value or "priority").strip().lower()
+    if criterion not in TASK_GROUP_COLUMNS:
+        return "priority"
+    return criterion
+
+
+def task_group_value(task, criterion):
+    payload_key = TASK_GROUP_COLUMNS[normalize_task_group_criterion(criterion)][1]
+    value = task.get(payload_key)
+    return str(value or "")
+
+
 def list_tasks(db, user, filters):
     where = ["t.deleted_at IS NULL"]
     args = []
+    group_criterion = normalize_task_group_criterion(filters.get("group_by"))
+    group_sql_column = TASK_GROUP_COLUMNS[group_criterion][0]
+    select_args = [group_criterion]
     preferences = user_preferences(db, user["id"])
     hide_done = truthy(filters.get("hide_done")) if "hide_done" in filters else preferences["hideDoneTasks"]
     member_id = filters.get("member_id")
@@ -1988,14 +2030,18 @@ def list_tasks(db, user, filters):
         args.extend([q, q])
     rows = db.query(
         f"""
-        SELECT t.*, p.name AS project_name, p.redmine_identifier, rt.link_type, rt.redmine_issue_id, rt.redmine_version_id, rt.issue_key
+        SELECT t.*, p.name AS project_name, p.redmine_identifier, rt.link_type, rt.redmine_issue_id, rt.redmine_version_id, rt.issue_key,
+          tgo.sort_order AS planner_sort_order
         FROM tasks t
         LEFT JOIN projects p ON p.id=t.project_id
         LEFT JOIN redmine_tickets rt ON rt.id=t.redmine_ticket_id
+        LEFT JOIN task_group_orders tgo ON tgo.task_id=t.id
+          AND tgo.group_criterion=%s
+          AND tgo.group_value=CAST(t.{group_sql_column} AS CHAR)
         WHERE {' AND '.join(where)}
-        ORDER BY t.due_date IS NULL, t.due_date, t.updated_at DESC
+        ORDER BY tgo.sort_order IS NULL, tgo.sort_order, t.due_date IS NULL, t.due_date, t.updated_at DESC
         """,
-        args,
+        select_args + args,
     )
     return [task_payload(db, row) for row in rows]
 
@@ -2053,6 +2099,7 @@ def task_payload(db, row):
         "members": members,
         "createdAt": date_value(row.get("created_at")),
         "updatedAt": date_value(row.get("updated_at")),
+        "sortOrder": int(row["planner_sort_order"]) if row.get("planner_sort_order") is not None else None,
     }
 
 
@@ -2276,6 +2323,63 @@ def can_mutate_team(db, user, team_id):
     if user["role"] == "lead":
         return team_id in teams_for_user(db, user["id"])
     return False
+
+
+def reorder_tasks_in_group(db, user, payload):
+    criterion = normalize_task_group_criterion(payload.get("groupBy"))
+    group_value = str(payload.get("groupValue") or "").strip()
+    task_ids = []
+    for value in payload.get("taskIds") or []:
+        if str(value).isdigit():
+            task_id = int(value)
+            if task_id not in task_ids:
+                task_ids.append(task_id)
+    task_ids = task_ids[:500]
+    if not group_value:
+        raise ValueError("Group value is required.")
+    if not task_ids:
+        raise ValueError("At least one task id is required.")
+
+    placeholders = ",".join(["%s"] * len(task_ids))
+    rows = db.query(
+        f"""
+        SELECT *
+        FROM tasks
+        WHERE id IN ({placeholders}) AND deleted_at IS NULL
+        """,
+        task_ids,
+    )
+    rows_by_id = {int(row["id"]): row for row in rows}
+    if len(rows_by_id) != len(task_ids):
+        raise KeyError("One or more tasks were not found.")
+    for task_id in task_ids:
+        row = rows_by_id[task_id]
+        if not can_mutate_team(db, user, row["team_id"]):
+            raise PermissionError("You do not have access to reorder one or more tasks.")
+        if task_row_group_value(row, criterion) != group_value:
+            raise ValueError("One or more tasks do not belong to the selected group.")
+
+    with db.transaction() as conn:
+        with conn.cursor() as cursor:
+            for index, task_id in enumerate(task_ids):
+                cursor.execute(
+                    """
+                    INSERT INTO task_group_orders
+                      (group_criterion, group_value, task_id, sort_order, updated_by_user_id)
+                    VALUES (%s,%s,%s,%s,%s)
+                    ON DUPLICATE KEY UPDATE
+                      sort_order=VALUES(sort_order),
+                      updated_by_user_id=VALUES(updated_by_user_id)
+                    """,
+                    (criterion, group_value, task_id, (index + 1) * 10, user["id"]),
+                )
+    return {"groupBy": criterion, "groupValue": group_value, "taskIds": task_ids}
+
+
+def task_row_group_value(row, criterion):
+    sql_column = TASK_GROUP_COLUMNS[normalize_task_group_criterion(criterion)][0]
+    value = row.get(sql_column)
+    return str(value or "")
 
 
 def replace_task_members(cursor, task_id, member_ids, source):

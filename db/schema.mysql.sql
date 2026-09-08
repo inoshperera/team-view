@@ -217,6 +217,20 @@ CREATE TABLE IF NOT EXISTS tasks (
   CONSTRAINT fk_tasks_updated FOREIGN KEY (updated_by_user_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS task_group_orders (
+  group_criterion VARCHAR(32) NOT NULL,
+  group_value VARCHAR(64) NOT NULL,
+  task_id BIGINT UNSIGNED NOT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  updated_by_user_id BIGINT UNSIGNED NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (group_criterion, group_value, task_id),
+  KEY idx_tgo_task (task_id),
+  KEY idx_tgo_lookup (group_criterion, group_value, sort_order),
+  CONSTRAINT fk_tgo_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+  CONSTRAINT fk_tgo_updated FOREIGN KEY (updated_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS task_assignments (
   task_id BIGINT UNSIGNED NOT NULL,
   user_id BIGINT UNSIGNED NOT NULL,
