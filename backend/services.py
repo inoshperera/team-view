@@ -1928,11 +1928,18 @@ def date_value(value):
 
 
 TASK_GROUP_COLUMNS = {
-    "category": ("category_id", "categoryId"),
-    "priority": ("priority_id", "priorityId"),
-    "status": ("status_id", "statusId"),
-    "year": ("task_year", "year"),
-    "quarter": ("task_quarter", "quarter"),
+    "category": ("t.category_id", "categoryId"),
+    "priority": ("t.priority_id", "priorityId"),
+    "status": ("t.status_id", "statusId"),
+    "year": ("CONVERT(CAST(t.task_year AS CHAR) USING utf8mb4) COLLATE utf8mb4_unicode_ci", "year"),
+    "quarter": ("CONVERT(CAST(t.task_quarter AS CHAR) USING utf8mb4) COLLATE utf8mb4_unicode_ci", "quarter"),
+}
+TASK_GROUP_ROW_COLUMNS = {
+    "category": "category_id",
+    "priority": "priority_id",
+    "status": "status_id",
+    "year": "task_year",
+    "quarter": "task_quarter",
 }
 
 
@@ -1953,7 +1960,7 @@ def list_tasks(db, user, filters):
     where = ["t.deleted_at IS NULL"]
     args = []
     group_criterion = normalize_task_group_criterion(filters.get("group_by"))
-    group_sql_column = TASK_GROUP_COLUMNS[group_criterion][0]
+    group_sql_expression = TASK_GROUP_COLUMNS[group_criterion][0]
     select_args = [group_criterion]
     preferences = user_preferences(db, user["id"])
     hide_done = truthy(filters.get("hide_done")) if "hide_done" in filters else preferences["hideDoneTasks"]
@@ -2037,7 +2044,7 @@ def list_tasks(db, user, filters):
         LEFT JOIN redmine_tickets rt ON rt.id=t.redmine_ticket_id
         LEFT JOIN task_group_orders tgo ON tgo.task_id=t.id
           AND tgo.group_criterion=%s
-          AND tgo.group_value=CAST(t.{group_sql_column} AS CHAR)
+          AND tgo.group_value={group_sql_expression}
         WHERE {' AND '.join(where)}
         ORDER BY tgo.sort_order IS NULL, tgo.sort_order, t.due_date IS NULL, t.due_date, t.updated_at DESC
         """,
@@ -2377,8 +2384,8 @@ def reorder_tasks_in_group(db, user, payload):
 
 
 def task_row_group_value(row, criterion):
-    sql_column = TASK_GROUP_COLUMNS[normalize_task_group_criterion(criterion)][0]
-    value = row.get(sql_column)
+    row_column = TASK_GROUP_ROW_COLUMNS[normalize_task_group_criterion(criterion)]
+    value = row.get(row_column)
     return str(value or "")
 
 
